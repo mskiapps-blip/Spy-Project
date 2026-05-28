@@ -30,17 +30,15 @@ function setupSheets() {
   setupConfigSheet(configSheet);
   setupHolidaySheet(holidaySheet);
 
-  // ── Holiday fetch is best-effort: if Nasdaq is slow or down,
-  //    we skip it here and use the hardcoded fallback at runtime.
-  //    The user can always refresh manually via the menu later.
-  var holidayNote = "";
-  try {
-    fetchHolidaysSilent();
-    holidayNote = "✅ Holidays loaded.";
-  } catch (e) {
-    Logger.log("setupSheets: holiday fetch skipped — " + e.message);
-    holidayNote = "⚠️ Holidays used fallback list (Nasdaq unreachable).\n   Refresh anytime: Menu → 📅 Refresh Holidays";
+  // ── Write fallback holidays directly — no network call during setup.
+  // ── Users can refresh live data anytime via Menu → 📅 Refresh Holidays.
+  var yr = new Date().getFullYear();
+  var fallbackRows = getFallbackHolidays(yr).concat(getFallbackHolidays(yr + 1));
+  var holidaySheet2 = ss.getSheetByName(SHEET_HOLIDAYS);
+  if (holidaySheet2 && holidaySheet2.getLastRow() <= 1 && fallbackRows.length > 0) {
+    holidaySheet2.getRange(2, 1, fallbackRows.length, 2).setValues(fallbackRows);
   }
+  var holidayNote = "✅ Holidays loaded from built-in list (2025–2026).";
 
   SpreadsheetApp.getUi().alert(
     "🚀 SPY TRACKER READY!\n\n" +
@@ -59,7 +57,10 @@ function setupSheets() {
 
 // ─────────────────────────────────────────────────────────────
 // Fetch holidays silently — only runs if the sheet is empty.
-// Throws on network failure so setupSheets() can catch it.
+// Throws on network failure so callers can catch it.
+// NOTE: Not called during setupSheets() to avoid hanging on
+//       the Nasdaq API. Called only from fetchAndSaveHolidays()
+//       which is triggered manually via the menu.
 // ─────────────────────────────────────────────────────────────
 function fetchHolidaysSilent() {
   var ss    = SpreadsheetApp.getActiveSpreadsheet();
