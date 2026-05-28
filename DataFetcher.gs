@@ -1,8 +1,10 @@
 // ============================================================
 // FILE: DataFetcher.gs
 // PURPOSE: Fetches live SPY data from Yahoo Finance (free, no key).
-//          Uses the v8 chart endpoint. Now also computes VWAP
+//          Uses the v8 chart endpoint. Also computes VWAP
 //          from intraday 5-min bars.
+//          NEW: fetchVIX() and fetchESFutures() for Bear Trap context.
+//          Both are cached per 5-min cycle to avoid extra quota burn.
 // ============================================================
 
 var YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart/SPY";
@@ -72,13 +74,11 @@ function fetchSPYData() {
     volumes.forEach(function(v) { if (v != null) volumeToday += v; });
     if (volumeToday === 0) volumeToday = volume;
 
-    // ── VWAP: cumulative(typical_price × volume) / cumulative(volume)
-    // Typical price = (high + low + close) / 3 per bar.
-    // Skip bars with null/zero data to avoid skewing the result.
+    // ── VWAP ─────────────────────────────────────────────────
     var vwap = computeVWAP(highs, lows, closes, volumes);
     Logger.log("VWAP: " + vwap);
 
-    // ── 30-day average volume (cached ~6h) ──────────────────
+    // ── 30-day average volume (cached ~6h) ───────────────────
     var avgVol30 = fetch30DayAvgVolume();
 
     return {
@@ -101,14 +101,174 @@ function fetchSPYData() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// VIX FETCH — cached 4 minutes so it only hits Yahoo once
+// per 5-min trigger cycle.
+//
+// Returns: { price, prevClose, change, changePct }
+//   price:     current VIX level
+//   prevClose: yesterday's VIX close
+//   change:    raw point change
+//   changePct: % change
+//   regime:    "LOW" (<15) | "NORMAL" (15-22) | "ELEVATED" (22-28) | "FEAR" (>28)
+//
+// Bear Trap context:
+//   NORMAL (15-22) = sweet spot — traps form most reliably here
+//   ELEVATED (22-28) = caution — flush may have more follow-through
+//   FEAR (>28) = danger — real selling, not a trap day
+// ─────────────────────────────────────────────────────────────
+function fetchVIX() {
+  var cache  = CacheService.getScriptCache();
+  var cached = cache.get("VIX_DATA");
+  if (cached) {
+    try { return JSON.parse(cached); } catch(e) {}
+  }
+
+  try {
+    var url  = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=5m&range=1d";
+    var resp = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    if (resp.getResponseCode() !== 200) {
+      Logger.log("VIX fetch non-200: " + resp.getResponseCode());
+      return null;
+    }
+
+    var json   = JSON.parse(resp.getContentText());
+    var result = json.chart && json.chart.result && json.chart.result[0];
+    if (!result || !result.meta) return null;
+
+    var meta      = result.meta;
+    var price     = meta.regularMarketPrice  || 0;
+    var prevClose = meta.previousClose       || meta.chartPreviousClose || price;
+
+    if (price === 0) return null;
+
+    var change    = price - prevClose;
+    var changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+
+    // Regime classification for Bear Trap scoring
+    var regime;
+    if      (price < 15)  regime = "LOW";
+    else if (price < 22)  regime = "NORMAL";
+    else if (price < 28)  regime = "ELEVATED";
+    else                  regime = "FEAR";
+
+    var data = {
+      price:     Math.round(price * 100) / 100,
+      prevClose: Math.round(prevClose * 100) / 100,
+      change:    Math.round(change * 100) / 100,
+      changePct: Math.round(changePct * 100) / 100,
+      regime:    regime
+    };
+
+    // Cache 4 minutes (240 seconds)
+    cache.put("VIX_DATA", JSON.stringify(data), 240);
+    Logger.log("VIX: " + price + " regime=" + regime);
+    return data;
+
+  } catch (e) {
+    Logger.log("fetchVIX ERROR: " + e.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// ES FUTURES FETCH — S&P 500 E-mini futures (ES=F)
+// Cached 4 minutes, same as VIX.
+//
+// Returns: { price, prevClose, change, changePct, trend }
+//   trend: "FADING" | "FLAT" | "CLIMBING"
+//     FADING   = futures dropping from their overnight high (trap setup)
+//     FLAT     = neutral, waiting
+//     CLIMBING = futures still pushing up (may not be a trap day)
+//
+// Bear Trap context:
+//   FADING ES pre-market = strong trap setup signal
+//   CLIMBING ES = trap less likely, flush may follow through
+// ─────────────────────────────────────────────────────────────
+function fetchESFutures() {
+  var cache  = CacheService.getScriptCache();
+  var cached = cache.get("ES_FUTURES_DATA");
+  if (cached) {
+    try { return JSON.parse(cached); } catch(e) {}
+  }
+
+  try {
+    var url  = "https://query1.finance.yahoo.com/v8/finance/chart/ES%3DF?interval=5m&range=1d";
+    var resp = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    if (resp.getResponseCode() !== 200) {
+      Logger.log("ES futures fetch non-200: " + resp.getResponseCode());
+      return null;
+    }
+
+    var json   = JSON.parse(resp.getContentText());
+    var result = json.chart && json.chart.result && json.chart.result[0];
+    if (!result || !result.meta) return null;
+
+    var meta      = result.meta;
+    var price     = meta.regularMarketPrice || 0;
+    var prevClose = meta.previousClose      || meta.chartPreviousClose || price;
+
+    if (price === 0) return null;
+
+    var change    = price - prevClose;
+    var changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+
+    // ── ES trend: is it fading from its overnight high? ──────
+    // Look at the last 3 intraday bars to see direction
+    var quotes  = result.indicators && result.indicators.quote && result.indicators.quote[0];
+    var closes  = (quotes && quotes.close) || [];
+    var dayHigh = meta.regularMarketDayHigh || price;
+
+    // Filter nulls and get last 3 valid closes
+    var validCloses = closes.filter(function(c) { return c != null && c > 0; });
+    var last3       = validCloses.slice(-3);
+
+    var trend = "FLAT";
+    if (last3.length >= 2) {
+      var recentMove = last3[last3.length - 1] - last3[0];
+      var movePct    = (recentMove / last3[0]) * 100;
+      if      (movePct < -0.05) trend = "FADING";
+      else if (movePct >  0.05) trend = "CLIMBING";
+      else                      trend = "FLAT";
+    }
+
+    // Also flag if price is well below the day's high (fading from high)
+    var distFromHigh = dayHigh > 0 ? ((price - dayHigh) / dayHigh) * 100 : 0;
+    if (distFromHigh < -0.15 && trend !== "CLIMBING") trend = "FADING";
+
+    var data = {
+      price:        Math.round(price * 100) / 100,
+      prevClose:    Math.round(prevClose * 100) / 100,
+      change:       Math.round(change * 100) / 100,
+      changePct:    Math.round(changePct * 100) / 100,
+      trend:        trend,
+      distFromHigh: Math.round(distFromHigh * 100) / 100
+    };
+
+    // Cache 4 minutes (240 seconds)
+    cache.put("ES_FUTURES_DATA", JSON.stringify(data), 240);
+    Logger.log("ES Futures: " + price + " trend=" + trend + " distFromHigh=" + distFromHigh + "%");
+    return data;
+
+  } catch (e) {
+    Logger.log("fetchESFutures ERROR: " + e.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // VWAP CALCULATOR
-// Uses intraday 5-min bars: typical price = (H + L + C) / 3.
-// Returns 0 if there are no valid bars yet.
 // ─────────────────────────────────────────────────────────────
 function computeVWAP(highs, lows, closes, volumes) {
-  var cumTPV = 0;  // cumulative (typical price × volume)
-  var cumVol = 0;  // cumulative volume
-
+  var cumTPV = 0;
+  var cumVol = 0;
   var len = Math.min(highs.length, lows.length, closes.length, volumes.length);
 
   for (var i = 0; i < len; i++) {
@@ -116,17 +276,14 @@ function computeVWAP(highs, lows, closes, volumes) {
     var l = lows[i];
     var c = closes[i];
     var v = volumes[i];
-
-    // Skip null or zero-volume bars (pre-market stubs, etc.)
     if (h == null || l == null || c == null || v == null || v === 0) continue;
-
     var typicalPrice = (h + l + c) / 3;
     cumTPV += typicalPrice * v;
     cumVol += v;
   }
 
   if (cumVol === 0) return 0;
-  return Math.round((cumTPV / cumVol) * 100) / 100;  // round to 2 decimal places
+  return Math.round((cumTPV / cumVol) * 100) / 100;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -164,7 +321,7 @@ function fetch30DayAvgVolume() {
     Logger.log("30d avg volume (" + count + " bars): " + avg);
 
     if (avg > 0) {
-      cache.put("AVG_VOL_30", String(avg), 21600); // cache 6 hours
+      cache.put("AVG_VOL_30", String(avg), 21600);
     }
     return avg;
 

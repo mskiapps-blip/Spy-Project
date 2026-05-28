@@ -9,61 +9,106 @@
 //    4. Rocket reversal up — the TRAP springs
 //
 //  Active window:  8:30–9:15 CST (first 45 min of session)
-//  AI memo:        1 sentence every 5 min via Gemini
-//  EOD brief:      Fires at ~3:00 CST (market close)
+//  AI memo:        1 sentence per 5 min — ONLY on phase change
+//                  or confidence threshold cross. Silent otherwise.
+//                  Free tier budget: max ~9 calls/day total.
+//  EOD brief:      Fires once at ~3:00 CST. Logs to SCORECARD.
 //
-//  All times displayed in CST 12-hour format.
-//  Hooks into the existing runEvery5Minutes() trigger.
+//  NEW in this version:
+//    • VIX regime check (LOW/NORMAL/ELEVATED/FEAR)
+//    • ES Futures trend (FADING/FLAT/CLIMBING)
+//    • Flush speed scoring (fast flush = stronger trap signal)
+//    • Win/Loss scorecard (📊 SCORECARD sheet)
+//    • AI only fires on meaningful state changes — not every tick
+//
+//  All times in CST 12-hour format.
 // ============================================================
 
 var SHEET_BEAR_TRAP = "🪤 BEAR TRAP";
 
 // ─────────────────────────────────────────────────────────────
 // TIMING CONSTANTS — all in CST
-// Market open = 8:30 CST (9:30 ET)
-// Active Bear Trap window = 8:30–9:15 CST
-// EOD brief window = 3:00–3:10 CST (market close)
 // ─────────────────────────────────────────────────────────────
 var BT = {
   OPEN_HOUR:          8,
   OPEN_MIN:           30,
   ACTIVE_END_HOUR:    9,
   ACTIVE_END_MIN:     15,
-  EOD_HOUR:           15,   // 3:00 PM CST
+  EOD_HOUR:           15,
   EOD_MIN:            0,
-  EOD_WINDOW_MIN:     10,   // fire EOD brief within 10 min of close
+  EOD_WINDOW_MIN:     10,
 
-  // Pattern detection thresholds
-  FLUSH_MIN_PCT:      0.20, // minimum drop to qualify as a flush
-  FLUSH_STRONG_PCT:   0.40, // strong flush (more conviction in trap)
-  VOLUME_WEAK_PCT:    90,   // below 90% of expected pace = weak volume
-  MOMENTUM_FLIP_PCT:  0.05, // tick must be +0.05% to count as flip
-  OVERNIGHT_TAG_PCT:  0.15, // within 0.15% of overnight high = "tagged"
-  CALL_CONFIRM_PCT:   0.10, // price must clear flush low + this % to confirm
+  // ── Pattern thresholds ────────────────────────────────────
+  FLUSH_MIN_PCT:      0.20,
+  FLUSH_STRONG_PCT:   0.40,
+  VOLUME_WEAK_PCT:    90,
+  MOMENTUM_FLIP_PCT:  0.05,
+  OVERNIGHT_TAG_PCT:  0.15,
+  CALL_CONFIRM_PCT:   0.10,
 
-  // Confidence scoring weights (must sum to 100)
-  SCORE_FLUSH_EXISTS:   20, // a qualifying flush happened
-  SCORE_FLUSH_STRONG:   15, // flush was >= FLUSH_STRONG_PCT
-  SCORE_VOL_WEAK:       15, // volume was below pace during flush
-  SCORE_ABOVE_SUPPORT:  15, // price stayed above key support (VWAP / prevClose)
-  SCORE_OVERNIGHT_TAG:  20, // overnight high was tagged before open
-  SCORE_MOMENTUM_FLIP:  15  // first green tick after flush detected
+  // ── Flush speed thresholds (% drop per 5-min bar) ─────────
+  // Fast flush = price drops hard in 1-2 bars then stalls
+  // Slow grind = price bleeds for 4-6 bars (less trap-like)
+  FLUSH_FAST_PCT_PER_BAR:  0.15, // ≥0.15%/bar = fast (strong trap signal)
+  FLUSH_SLOW_PCT_PER_BAR:  0.05, // <0.05%/bar = slow grind (weaker signal)
+
+  // ── VIX regime weights ────────────────────────────────────
+  // Added to confidence when VIX is in the Bear Trap sweet spot
+  SCORE_VIX_NORMAL:   10, // VIX 15-22: ideal trap conditions
+  // ELEVATED (22-28): neutral, no bonus — traps still happen but riskier
+  // FEAR (>28): subtract from confidence — real selling more likely
+  SCORE_VIX_FEAR:    -15, // VIX >28: penalize — not a trap day
+
+  // ── ES Futures weights ────────────────────────────────────
+  SCORE_ES_FADING:    15, // ES fading from overnight high = trap setup
+  SCORE_ES_CLIMBING: -10, // ES still climbing = flush may follow through
+
+  // ── Flush speed weights ───────────────────────────────────
+  SCORE_FLUSH_FAST:   10, // fast flush = panic, not real selling
+  // Slow flush: no bonus — neutral
+
+  // ── Original weights (rebalanced to keep max=100) ─────────
+  SCORE_FLUSH_EXISTS:  15,
+  SCORE_FLUSH_STRONG:  10,
+  SCORE_VOL_WEAK:      10,
+  SCORE_ABOVE_SUPPORT: 10,
+  SCORE_OVERNIGHT_TAG: 15,
+  SCORE_MOMENTUM_FLIP: 10
+
+  // ── Max possible score breakdown ──────────────────────────
+  // Flush exists:    15
+  // Flush strong:    10
+  // Vol weak:        10
+  // Above support:   10
+  // Overnight tag:   15
+  // Momentum flip:   10
+  // VIX normal:      10
+  // ES fading:       15
+  // Flush fast:      10
+  // ─────────────────
+  // Max raw:        105  (intentionally slightly over 100 so
+  //                       multiple strong signals push past 75%
+  //                       threshold cleanly)
 };
 
 // ─────────────────────────────────────────────────────────────
 // BEAR TRAP COLUMNS
+// NEW: VIX and ES columns added (shifted AI_MEMO right)
 // ─────────────────────────────────────────────────────────────
 var BTC = {
-  TIME:           1,  // A — CST 12hr
+  TIME:           1,  // A
   PRICE:          2,  // B
-  PHASE:          3,  // C — PRE-OPEN / FLUSH / STALL / RIP / POST
-  FLUSH_DEPTH:    4,  // D — max drop from open price (%)
-  VOL_SIGNAL:     5,  // E — volume vs expected pace
-  CONFIDENCE:     6,  // F — 0–100 Bear Trap confidence score
-  ENTRY_SIGNAL:   7,  // G — WAIT / WATCH / ✅ BUY CALLS / ⚠️ MISSED
-  TARGET_PRICE:   8,  // H — specific SPY price level to confirm entry
-  OVERNIGHT:      9,  // I — overnight high/low context
-  AI_MEMO:        10  // J — 1-sentence Gemini commentary
+  PHASE:          3,  // C
+  FLUSH_DEPTH:    4,  // D
+  FLUSH_SPEED:    5,  // E — NEW: fast/slow/grinding
+  VOL_SIGNAL:     6,  // F
+  VIX:            7,  // G — NEW: VIX level + regime
+  ES_TREND:       8,  // H — NEW: ES futures trend
+  CONFIDENCE:     9,  // I
+  ENTRY_SIGNAL:   10, // J
+  TARGET_PRICE:   11, // K
+  OVERNIGHT:      12, // L
+  AI_MEMO:        13  // M
 };
 
 var BT_HEADERS = [
@@ -71,7 +116,10 @@ var BT_HEADERS = [
   "💰 SPY PRICE",
   "📍 PHASE",
   "📉 FLUSH DEPTH",
+  "⚡ FLUSH SPEED",
   "📦 VOL SIGNAL",
+  "😨 VIX",
+  "📡 ES FUTURES",
   "🎯 CONFIDENCE",
   "🚦 ENTRY SIGNAL",
   "🏹 TARGET PRICE",
@@ -81,14 +129,25 @@ var BT_HEADERS = [
 
 // Phase labels
 var PHASE = {
-  PRE_OPEN:  "🌅 PRE-OPEN",
-  FLUSH:     "📉 FLUSH",
-  STALL:     "⏸ STALL",
-  FLIP:      "⚡ FLIP",
-  RIP:       "🚀 RIP",
-  POST:      "➡️ POST-WINDOW",
-  CLOSED:    "🔒 CLOSED"
+  PRE_OPEN: "🌅 PRE-OPEN",
+  FLUSH:    "📉 FLUSH",
+  STALL:    "⏸ STALL",
+  FLIP:     "⚡ FLIP",
+  RIP:      "🚀 RIP",
+  POST:     "➡️ POST-WINDOW",
+  CLOSED:   "🔒 CLOSED"
 };
+
+// ─────────────────────────────────────────────────────────────
+// AI USAGE BUDGET
+// Free tier Gemini: ~1500 requests/day, 1M tokens/day.
+// We target max 9 AI calls per trading day:
+//   • Up to 8 during active window (phase-change gated, not every tick)
+//   • 1 EOD brief
+// Gate: only fire when phase changes OR confidence crosses a threshold.
+// This means silent ticks where nothing meaningful changed.
+// ─────────────────────────────────────────────────────────────
+var AI_PHASE_CHANGE_GATE = true; // set false to revert to every-tick AI
 
 // ─────────────────────────────────────────────────────────────
 // MAIN ENTRY — called from runEvery5Minutes() in Code.gs
@@ -98,22 +157,21 @@ function runBearTrapTick(data, now) {
     var cst = toCSTDate(now);
     var ss  = SpreadsheetApp.getActiveSpreadsheet();
 
-    // Ensure sheet exists
     var sheet = ss.getSheetByName(SHEET_BEAR_TRAP);
     if (!sheet) {
       setupBearTrapSheet(ss);
       sheet = ss.getSheetByName(SHEET_BEAR_TRAP);
     }
 
-    var cstHour = cst.getHours();
-    var cstMin  = cst.getMinutes();
+    var cstHour  = cst.getHours();
+    var cstMin   = cst.getMinutes();
     var totalMin = cstHour * 60 + cstMin;
 
-    var openMin       = BT.OPEN_HOUR * 60 + BT.OPEN_MIN;
-    var activeEndMin  = BT.ACTIVE_END_HOUR * 60 + BT.ACTIVE_END_MIN;
-    var eodMin        = BT.EOD_HOUR * 60 + BT.EOD_MIN;
+    var openMin      = BT.OPEN_HOUR * 60 + BT.OPEN_MIN;
+    var activeEndMin = BT.ACTIVE_END_HOUR * 60 + BT.ACTIVE_END_MIN;
+    var eodMin       = BT.EOD_HOUR * 60 + BT.EOD_MIN;
 
-    // ── EOD Brief: fire once at ~3:00 CST ──────────────────
+    // ── EOD Brief ─────────────────────────────────────────────
     if (totalMin >= eodMin && totalMin <= eodMin + BT.EOD_WINDOW_MIN) {
       var eodFired = getFlag("BT_EOD_FIRED_TODAY");
       var todayStr = Utilities.formatDate(cst, "America/Chicago", "yyyy-MM-dd");
@@ -124,57 +182,78 @@ function runBearTrapTick(data, now) {
       return;
     }
 
-    // ── Only run active detection during the Bear Trap window ──
-    if (totalMin < openMin || totalMin > activeEndMin) {
-      // Still update pre-open overnight panel if before open
-      if (totalMin < openMin && data) {
-        updatePreOpenPanel(sheet, data, cst);
-      }
+    // ── Pre-open panel (before 8:30 CST) ─────────────────────
+    if (totalMin < openMin) {
+      if (data) updatePreOpenPanel(sheet, data, cst);
       return;
     }
 
+    // ── Outside active window (after 9:15 CST) ───────────────
+    if (totalMin > activeEndMin) return;
+
     if (!data) return;
 
-    // ── Compute all metrics ─────────────────────────────────
-    var metrics = computeBearTrapMetrics(data, cst);
+    // ── Fetch VIX + ES (cached — no extra quota per tick) ────
+    var vixData = fetchVIX();
+    var esData  = fetchESFutures();
 
-    // ── Build the row ───────────────────────────────────────
-    var timeStr   = Utilities.formatDate(cst, "America/Chicago", "h:mma").toLowerCase();
-    var phaseStr  = metrics.phase;
-    var flushStr  = metrics.flushDepthPct !== null
-                    ? (metrics.flushDepthPct > 0 ? "-" : "") + Math.abs(metrics.flushDepthPct).toFixed(2) + "%"
-                    : "—";
-    var volStr    = metrics.volPct > 0
-                    ? metrics.volPct.toFixed(0) + "% of pace"
-                    : "—";
-    var confStr   = metrics.confidence + "%";
-    var entryStr  = metrics.entrySignal;
+    // ── Compute metrics ───────────────────────────────────────
+    var metrics = computeBearTrapMetrics(data, cst, vixData, esData);
+
+    // ── AI memo — gated to save quota ────────────────────────
+    var aiMemo = null;
+    if (shouldFireAI(metrics)) {
+      aiMemo = getBearTrapAIMemo(metrics, data, vixData, esData, cst);
+    }
+
+    // ── Build row ─────────────────────────────────────────────
+    var timeStr  = Utilities.formatDate(cst, "America/Chicago", "h:mma").toLowerCase();
+
+    var flushStr = metrics.flushDepthPct !== 0
+      ? (metrics.flushDepthPct < 0 ? "" : "+") + metrics.flushDepthPct.toFixed(2) + "%"
+      : "—";
+
+    var flushSpeedStr = metrics.flushSpeedStr || "—";
+
+    var volStr = metrics.volPct > 0
+      ? metrics.volPct.toFixed(0) + "% of pace"
+      : "—";
+
+    var vixStr = vixData
+      ? vixData.price.toFixed(2) + " [" + vixData.regime + "]"
+      : "—";
+
+    var esStr = esData
+      ? "$" + esData.price.toFixed(2) + " " + esData.trend
+      : "—";
+
+    var confStr   = Math.min(metrics.confidence, 100) + "%";
     var targetStr = metrics.targetPrice ? "$" + metrics.targetPrice.toFixed(2) : "—";
-    var overnightStr = metrics.overnightStr || "—";
-
-    // ── AI memo every 5 min during window ──────────────────
-    var aiMemo = getBearTrapAIMemo(metrics, data, cst);
 
     var row = [
       timeStr,
       data.price,
-      phaseStr,
+      metrics.phase,
       flushStr,
+      flushSpeedStr,
       volStr,
+      vixStr,
+      esStr,
       confStr,
-      entryStr,
+      metrics.entrySignal,
       targetStr,
-      overnightStr,
+      metrics.overnightStr || "—",
       aiMemo || ""
     ];
 
     sheet.appendRow(row);
     var newRow = sheet.getLastRow();
+    applyBearTrapRowFormat(sheet, newRow, metrics, vixData, esData);
 
-    // ── Format the row ──────────────────────────────────────
-    applyBearTrapRowFormat(sheet, newRow, metrics);
-
-    Logger.log("BearTrap tick: phase=" + phaseStr + " conf=" + metrics.confidence + "% entry=" + entryStr);
+    Logger.log("BearTrap tick: phase=" + metrics.phase +
+               " conf=" + metrics.confidence + "%" +
+               " vix=" + (vixData ? vixData.regime : "n/a") +
+               " es=" + (esData ? esData.trend : "n/a"));
 
   } catch (e) {
     Logger.log("runBearTrapTick ERROR: " + e.message + "\n" + e.stack);
@@ -182,33 +261,96 @@ function runBearTrapTick(data, now) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// COMPUTE ALL BEAR TRAP METRICS FOR THIS TICK
+// AI GATE — only fire Gemini when something meaningful changed.
+// Saves ~60-70% of AI calls vs every-tick firing.
+//
+// Fires when:
+//   1. Phase just changed (FLUSH→STALL, STALL→FLIP, FLIP→RIP)
+//   2. Confidence just crossed a threshold (50%, 75%)
+//   3. Entry signal just upgraded to BUY CALLS
+//   4. First tick of the session (initial read)
 // ─────────────────────────────────────────────────────────────
-function computeBearTrapMetrics(data, cst) {
-  var price      = data.price;
-  var prevClose  = data.prevClose  || price;
-  var dayOpen    = parseFloat(getFlag("BT_DAY_OPEN"))    || 0;
-  var sessionHigh = parseFloat(getFlag("BT_SESSION_HIGH")) || price;
-  var sessionLow  = parseFloat(getFlag("BT_SESSION_LOW"))  || price;
-  var flushLow    = parseFloat(getFlag("BT_FLUSH_LOW"))    || 0;
+function shouldFireAI(metrics) {
+  if (!AI_PHASE_CHANGE_GATE) return true; // bypass gate if disabled
+
+  var lastPhase    = getFlag("BT_LAST_AI_PHASE")      || "";
+  var lastConfBand = getFlag("BT_LAST_AI_CONF_BAND")  || "0";
+  var lastSignal   = getFlag("BT_LAST_AI_SIGNAL")     || "";
+  var aiCallCount  = parseInt(getFlag("BT_AI_CALL_COUNT") || "0");
+
+  // Hard cap: max 8 AI calls during active window
+  if (aiCallCount >= 8) {
+    Logger.log("AI gate: daily cap reached (" + aiCallCount + ")");
+    return false;
+  }
+
+  var currentConfBand = metrics.confidence >= 75 ? "HIGH"
+                      : metrics.confidence >= 50 ? "MID"
+                      : "LOW";
+
+  var fire = false;
+  var reason = "";
+
+  // Phase changed
+  if (metrics.phase !== lastPhase) {
+    fire = true; reason = "phase change: " + lastPhase + " → " + metrics.phase;
+  }
+  // Confidence band crossed upward
+  else if (currentConfBand !== lastConfBand &&
+           (currentConfBand === "MID" || currentConfBand === "HIGH")) {
+    fire = true; reason = "conf band: " + lastConfBand + " → " + currentConfBand;
+  }
+  // Entry signal upgraded to BUY CALLS
+  else if (metrics.entrySignal.indexOf("BUY CALLS") !== -1 &&
+           lastSignal.indexOf("BUY CALLS") === -1) {
+    fire = true; reason = "entry signal: BUY CALLS issued";
+  }
+  // First tick of session (no phase stored yet)
+  else if (lastPhase === "") {
+    fire = true; reason = "first tick of session";
+  }
+
+  if (fire) {
+    setFlag("BT_LAST_AI_PHASE",     metrics.phase);
+    setFlag("BT_LAST_AI_CONF_BAND", currentConfBand);
+    setFlag("BT_LAST_AI_SIGNAL",    metrics.entrySignal);
+    setFlag("BT_AI_CALL_COUNT",     (aiCallCount + 1).toString());
+    Logger.log("AI gate: FIRING (" + reason + ") call #" + (aiCallCount + 1));
+  } else {
+    Logger.log("AI gate: silent tick (phase=" + metrics.phase +
+               " conf=" + metrics.confidence + "%)");
+  }
+
+  return fire;
+}
+
+// ─────────────────────────────────────────────────────────────
+// COMPUTE ALL BEAR TRAP METRICS
+// ─────────────────────────────────────────────────────────────
+function computeBearTrapMetrics(data, cst, vixData, esData) {
+  var price     = data.price;
+  var prevClose = data.prevClose || price;
+  var dayOpen   = parseFloat(getFlag("BT_DAY_OPEN"))     || 0;
+  var flushLow  = parseFloat(getFlag("BT_FLUSH_LOW"))    || 0;
   var flipDetected = getFlag("BT_FLIP_DETECTED") === "YES";
   var ripDetected  = getFlag("BT_RIP_DETECTED")  === "YES";
 
-  // Set day open on first tick
   if (dayOpen === 0) {
     dayOpen = price;
     setFlag("BT_DAY_OPEN", dayOpen);
+    setFlag("BT_OPEN_TIME_MIN", (cst.getHours() * 60 + cst.getMinutes()).toString());
   }
 
-  // Track session high/low
+  // Session high/low tracking
+  var sessionHigh = parseFloat(getFlag("BT_SESSION_HIGH")) || price;
+  var sessionLow  = parseFloat(getFlag("BT_SESSION_LOW"))  || price;
   if (price > sessionHigh) { sessionHigh = price; setFlag("BT_SESSION_HIGH", sessionHigh); }
-  if (price < sessionLow || sessionLow === 0)  { sessionLow  = price; setFlag("BT_SESSION_LOW",  sessionLow);  }
+  if (price < sessionLow || sessionLow === 0) { sessionLow = price; setFlag("BT_SESSION_LOW", sessionLow); }
 
-  // ── Flush depth: max drop from day open ──────────────────
-  var flushDepthPct = dayOpen > 0 ? ((price - dayOpen) / dayOpen) * 100 : 0;
+  // ── Flush depth ───────────────────────────────────────────
+  var flushDepthPct = dayOpen > 0 ? Math.round(((price - dayOpen) / dayOpen) * 10000) / 100 : 0;
   var maxFlushPct   = parseFloat(getFlag("BT_MAX_FLUSH_PCT")) || 0;
 
-  // Track the deepest flush (most negative reading)
   if (flushDepthPct < maxFlushPct) {
     maxFlushPct = flushDepthPct;
     setFlag("BT_MAX_FLUSH_PCT", maxFlushPct);
@@ -216,27 +358,45 @@ function computeBearTrapMetrics(data, cst) {
     flushLow = price;
   }
 
-  // ── Volume vs expected pace ───────────────────────────────
-  var cstHour = cst.getHours();
-  var cstMin  = cst.getMinutes();
+  // ── Flush speed ───────────────────────────────────────────
+  // Track how fast the flush happened: % drop per bar elapsed since open
+  var openTimeMins = parseInt(getFlag("BT_OPEN_TIME_MIN") || "0");
+  var nowMins      = cst.getHours() * 60 + cst.getMinutes();
+  var barsElapsed  = Math.max(1, Math.round((nowMins - openTimeMins) / 5));
+  var flushPctPerBar = barsElapsed > 0 ? Math.abs(maxFlushPct) / barsElapsed : 0;
+
+  var flushSpeedStr;
+  var flushFast = false;
+  if (Math.abs(maxFlushPct) < BT.FLUSH_MIN_PCT) {
+    flushSpeedStr = "—";
+  } else if (flushPctPerBar >= BT.FLUSH_FAST_PCT_PER_BAR) {
+    flushSpeedStr = "⚡ FAST (" + flushPctPerBar.toFixed(2) + "%/bar)";
+    flushFast = true;
+  } else if (flushPctPerBar >= BT.FLUSH_SLOW_PCT_PER_BAR) {
+    flushSpeedStr = "📊 MODERATE (" + flushPctPerBar.toFixed(2) + "%/bar)";
+  } else {
+    flushSpeedStr = "🐌 SLOW (" + flushPctPerBar.toFixed(2) + "%/bar)";
+  }
+
+  // ── Volume vs pace ────────────────────────────────────────
+  var cstHour    = cst.getHours();
+  var cstMin     = cst.getMinutes();
   var elapsedMin = (cstHour * 60 + cstMin) - (BT.OPEN_HOUR * 60 + BT.OPEN_MIN);
-  var sessionLen = 390; // 6.5 hours in minutes
-  var dayFraction = Math.max(0.02, elapsedMin / sessionLen);
-  var expectedVol = data.avgVol30 > 0 ? data.avgVol30 * dayFraction : 0;
-  var volPct = expectedVol > 0 ? (data.volumeToday / expectedVol) * 100 : 0;
+  var dayFrac    = Math.max(0.02, elapsedMin / 390);
+  var expectedV  = data.avgVol30 > 0 ? data.avgVol30 * dayFrac : 0;
+  var volPct     = expectedV > 0 ? (data.volumeToday / expectedV) * 100 : 0;
 
   // ── Overnight data ────────────────────────────────────────
   var overnightHigh = parseFloat(getFlag("BT_OVERNIGHT_HIGH")) || 0;
   var overnightLow  = parseFloat(getFlag("BT_OVERNIGHT_LOW"))  || 0;
   var overnightStr  = buildOvernightStr(price, overnightHigh, overnightLow, dayOpen);
 
-  // ── Phase detection ───────────────────────────────────────
-  var flushExists = Math.abs(maxFlushPct) >= BT.FLUSH_MIN_PCT;
-  var flushStrong = Math.abs(maxFlushPct) >= BT.FLUSH_STRONG_PCT;
-
-  // Momentum flip: current price recovering from flush low
+  // ── Flip / rip detection ──────────────────────────────────
   var prevPrice = parseFloat(getFlag("PREV_PRICE")) || 0;
   var tickPct   = prevPrice > 0 ? ((price - prevPrice) / prevPrice) * 100 : 0;
+
+  var flushExists = Math.abs(maxFlushPct) >= BT.FLUSH_MIN_PCT;
+  var flushStrong = Math.abs(maxFlushPct) >= BT.FLUSH_STRONG_PCT;
 
   if (!flipDetected && flushExists && tickPct >= BT.MOMENTUM_FLIP_PCT && price < dayOpen) {
     flipDetected = true;
@@ -253,14 +413,13 @@ function computeBearTrapMetrics(data, cst) {
     }
   }
 
-  // Determine current phase
+  // ── Phase ─────────────────────────────────────────────────
   var phase;
   if (ripDetected) {
     phase = PHASE.RIP;
   } else if (flipDetected) {
     phase = PHASE.FLIP;
   } else if (flushExists) {
-    // Check if flush is stalling (tick momentum flattening)
     var recentTicks = getFlag("BT_RECENT_TICKS") || "";
     var tickArr = recentTicks.length > 0
       ? recentTicks.split(",").map(parseFloat).filter(function(v) { return !isNaN(v); })
@@ -268,54 +427,70 @@ function computeBearTrapMetrics(data, cst) {
     tickArr.push(tickPct);
     if (tickArr.length > 4) tickArr = tickArr.slice(-4);
     setFlag("BT_RECENT_TICKS", tickArr.join(","));
-
-    var avgRecentTick = tickArr.reduce(function(a, b) { return a + b; }, 0) / tickArr.length;
-    phase = (avgRecentTick > -0.02 && avgRecentTick < 0.05) ? PHASE.STALL : PHASE.FLUSH;
+    var avgTick = tickArr.reduce(function(a, b) { return a + b; }, 0) / tickArr.length;
+    phase = (avgTick > -0.02 && avgTick < 0.05) ? PHASE.STALL : PHASE.FLUSH;
   } else {
-    phase = PHASE.FLUSH; // Still in early open, watching
+    phase = PHASE.FLUSH;
   }
 
   // ── Confidence score ──────────────────────────────────────
   var score = 0;
+
+  // Original signals
   if (flushExists)  score += BT.SCORE_FLUSH_EXISTS;
   if (flushStrong)  score += BT.SCORE_FLUSH_STRONG;
   if (volPct > 0 && volPct < BT.VOLUME_WEAK_PCT) score += BT.SCORE_VOL_WEAK;
 
-  // Price above key support (prevClose or VWAP)
-  var vwap = data.vwap || 0;
+  var vwap       = data.vwap || 0;
   var keySupport = Math.max(prevClose, vwap > 0 ? vwap : 0);
   if (keySupport > 0 && price >= keySupport * 0.997) score += BT.SCORE_ABOVE_SUPPORT;
 
-  // Overnight high tagged
   var overnightTagged = getFlag("BT_OVERNIGHT_TAGGED") === "YES";
   if (overnightTagged) score += BT.SCORE_OVERNIGHT_TAG;
+  if (flipDetected)    score += BT.SCORE_MOMENTUM_FLIP;
 
-  // Momentum flip
-  if (flipDetected) score += BT.SCORE_MOMENTUM_FLIP;
+  // NEW: VIX regime bonus/penalty
+  if (vixData) {
+    if (vixData.regime === "NORMAL")  score += BT.SCORE_VIX_NORMAL;
+    if (vixData.regime === "FEAR")    score += BT.SCORE_VIX_FEAR;
+    // ELEVATED: no bonus, no penalty — neutral
+  }
 
-  // ── Entry signal + target price ───────────────────────────
+  // NEW: ES Futures trend bonus/penalty
+  if (esData) {
+    if (esData.trend === "FADING")   score += BT.SCORE_ES_FADING;
+    if (esData.trend === "CLIMBING") score += BT.SCORE_ES_CLIMBING;
+  }
+
+  // NEW: Flush speed bonus
+  if (flushFast) score += BT.SCORE_FLUSH_FAST;
+
+  // Clamp to 0-100
+  score = Math.max(0, Math.min(100, score));
+
+  // ── Entry signal + target ─────────────────────────────────
   var entrySignal = "⏳ WAIT";
   var targetPrice = null;
 
   if (score >= 75 && flipDetected && !ripDetected) {
-    // Strong setup, flip confirmed — give specific entry target
-    // Target = flip price + small buffer above flush low
     targetPrice = flushLow > 0
-      ? flushLow * (1 + BT.CALL_CONFIRM_PCT / 100)
-      : price * 1.001;
+      ? Math.round(flushLow * (1 + BT.CALL_CONFIRM_PCT / 100) * 100) / 100
+      : Math.round(price * 1.001 * 100) / 100;
     entrySignal = "✅ BUY CALLS";
   } else if (score >= 60 && flipDetected) {
-    targetPrice = flushLow > 0 ? flushLow * (1 + BT.CALL_CONFIRM_PCT / 100) : null;
+    targetPrice = flushLow > 0
+      ? Math.round(flushLow * (1 + BT.CALL_CONFIRM_PCT / 100) * 100) / 100
+      : null;
     entrySignal = "👀 WATCH — Flip @ $" + (targetPrice ? targetPrice.toFixed(2) : "?");
   } else if (score >= 50 && flushExists) {
     entrySignal = "🟡 PATTERN FORMING (" + score + "%)";
   } else if (ripDetected && !flipDetected) {
     entrySignal = "⚠️ MISSED — Rip without clean flip";
-  } else if (score < 30) {
+  } else if (score < 25 && flushExists) {
     entrySignal = "❌ NOT TODAY";
   }
 
-  // Save key metrics for EOD grading
+  // Persist for EOD grading
   setFlag("BT_LAST_CONFIDENCE", score.toString());
   setFlag("BT_LAST_PHASE", phase);
   if (entrySignal.indexOf("BUY") !== -1) {
@@ -327,75 +502,87 @@ function computeBearTrapMetrics(data, cst) {
     phase:         phase,
     flushDepthPct: flushDepthPct,
     maxFlushPct:   maxFlushPct,
+    flushSpeedStr: flushSpeedStr,
+    flushFast:     flushFast,
     volPct:        volPct,
     confidence:    score,
     entrySignal:   entrySignal,
     targetPrice:   targetPrice,
     overnightStr:  overnightStr,
     flushExists:   flushExists,
+    flushStrong:   flushStrong,
     flipDetected:  flipDetected,
     ripDetected:   ripDetected,
-    tickPct:       tickPct
+    tickPct:       tickPct,
+    sessionHigh:   sessionHigh,
+    sessionLow:    sessionLow
   };
 }
 
 // ─────────────────────────────────────────────────────────────
-// PRE-OPEN PANEL — updates overnight data before 8:30 CST
-// Called when tick fires before market open
+// PRE-OPEN PANEL
 // ─────────────────────────────────────────────────────────────
 function updatePreOpenPanel(sheet, data, cst) {
   try {
-    // Fetch pre-market data
     var pmData = fetchPreMarketData();
     if (!pmData) return;
 
-    setFlag("BT_OVERNIGHT_HIGH", pmData.high.toString());
-    setFlag("BT_OVERNIGHT_LOW",  pmData.low.toString());
-    setFlag("BT_PREMARKET_CLOSE", pmData.close.toString());
+    setFlag("BT_OVERNIGHT_HIGH",   pmData.high.toString());
+    setFlag("BT_OVERNIGHT_LOW",    pmData.low.toString());
+    setFlag("BT_PREMARKET_CLOSE",  pmData.close.toString());
 
-    // Tag if price is near overnight high
     var priceDiffPct = Math.abs((data.price - pmData.high) / pmData.high) * 100;
     if (priceDiffPct <= BT.OVERNIGHT_TAG_PCT) {
       setFlag("BT_OVERNIGHT_TAGGED", "YES");
     }
 
-    // Write a pre-open summary row
+    var lastPreOpen = getFlag("BT_PREOPEN_WRITTEN");
+    var todayStr    = Utilities.formatDate(cst, "America/Chicago", "yyyy-MM-dd");
+    if (lastPreOpen === todayStr) return;
+
     var timeStr = Utilities.formatDate(cst, "America/Chicago", "h:mma").toLowerCase();
     var tagStr  = priceDiffPct <= BT.OVERNIGHT_TAG_PCT ? "🚨 HIGH TAGGED" : "—";
     var summary = "PM High: $" + pmData.high.toFixed(2)
                 + "  PM Low: $" + pmData.low.toFixed(2)
-                + "  Last: $" + pmData.close.toFixed(2);
+                + "  Last: $"   + pmData.close.toFixed(2);
 
-    // Only write pre-open rows if we haven't yet today
-    var lastPreOpen = getFlag("BT_PREOPEN_WRITTEN");
-    var todayStr = Utilities.formatDate(cst, "America/Chicago", "yyyy-MM-dd");
-    if (lastPreOpen !== todayStr) {
-      sheet.appendRow([
-        timeStr, data.price, PHASE.PRE_OPEN,
-        "—", "—", "—",
-        tagStr, "—", summary, "⏳ Watching pre-market..."
-      ]);
-      var r = sheet.getLastRow();
-      sheet.getRange(r, 1, 1, BT_HEADERS.length)
-        .setBackground("#1a1a3e")
-        .setFontColor("#9090cc")
-        .setFontSize(9)
-        .setFontStyle("italic");
-      setFlag("BT_PREOPEN_WRITTEN", todayStr);
-    }
+    // Fetch VIX early for pre-open context
+    var vixData = fetchVIX();
+    var esData  = fetchESFutures();
+    var vixStr  = vixData ? vixData.price.toFixed(2) + " [" + vixData.regime + "]" : "—";
+    var esStr   = esData  ? "$" + esData.price.toFixed(2) + " " + esData.trend    : "—";
+
+    // Pre-open row uses all columns, padded to match BT_HEADERS length
+    var preRow = new Array(BT_HEADERS.length).fill("—");
+    preRow[BTC.TIME - 1]      = timeStr;
+    preRow[BTC.PRICE - 1]     = data.price;
+    preRow[BTC.PHASE - 1]     = PHASE.PRE_OPEN;
+    preRow[BTC.VIX - 1]       = vixStr;
+    preRow[BTC.ES_TREND - 1]  = esStr;
+    preRow[BTC.ENTRY_SIGNAL - 1] = tagStr;
+    preRow[BTC.OVERNIGHT - 1] = summary;
+    preRow[BTC.AI_MEMO - 1]   = "⏳ Watching pre-market...";
+
+    sheet.appendRow(preRow);
+    var r = sheet.getLastRow();
+    sheet.getRange(r, 1, 1, BT_HEADERS.length)
+      .setBackground("#1a1a3e")
+      .setFontColor("#9090cc")
+      .setFontSize(9)
+      .setFontStyle("italic");
+
+    setFlag("BT_PREOPEN_WRITTEN", todayStr);
   } catch (e) {
     Logger.log("updatePreOpenPanel ERROR: " + e.message);
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-// FETCH PRE-MARKET DATA from Yahoo Finance
-// Returns { high, low, close } for the pre-market session
+// FETCH PRE-MARKET DATA
 // ─────────────────────────────────────────────────────────────
 function fetchPreMarketData() {
   try {
-    // Use 1-day chart with 5-min bars — pre-market bars are included
-    var url = "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=5m&range=1d&includePrePost=true";
+    var url  = "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=5m&range=1d&includePrePost=true";
     var resp = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
       headers: { "User-Agent": "Mozilla/5.0" }
@@ -410,24 +597,17 @@ function fetchPreMarketData() {
     var quotes     = result.indicators && result.indicators.quote && result.indicators.quote[0];
     if (!quotes) return null;
 
-    var highs  = quotes.high   || [];
-    var lows   = quotes.low    || [];
-    var closes = quotes.close  || [];
+    var highs  = quotes.high  || [];
+    var lows   = quotes.low   || [];
+    var closes = quotes.close || [];
 
-    // Pre-market = timestamps before 8:30 CST (13:30 UTC)
-    // 8:30 CST = 14:30 UTC
+    // Pre-market = before 8:30 CST = before 14:30 UTC
     var preMarketEndUTC = 14 * 3600 + 30 * 60;
-
-    var pmHigh  = 0;
-    var pmLow   = Infinity;
-    var pmClose = 0;
+    var pmHigh = 0, pmLow = Infinity, pmClose = 0;
 
     for (var i = 0; i < timestamps.length; i++) {
-      var ts = timestamps[i];
-      // Get seconds since midnight UTC
-      var d        = new Date(ts * 1000);
+      var d        = new Date(timestamps[i] * 1000);
       var secOfDay = d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
-
       if (secOfDay < preMarketEndUTC) {
         if (highs[i]  != null && highs[i]  > pmHigh)  pmHigh  = highs[i];
         if (lows[i]   != null && lows[i]   < pmLow)   pmLow   = lows[i];
@@ -436,11 +616,10 @@ function fetchPreMarketData() {
     }
 
     if (pmHigh === 0) return null;
-    if (pmLow  === Infinity) pmLow = pmHigh;
+    if (pmLow === Infinity) pmLow = pmHigh;
 
     Logger.log("Pre-market: high=" + pmHigh + " low=" + pmLow + " close=" + pmClose);
     return { high: pmHigh, low: pmLow, close: pmClose };
-
   } catch (e) {
     Logger.log("fetchPreMarketData ERROR: " + e.message);
     return null;
@@ -448,74 +627,49 @@ function fetchPreMarketData() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// BUILD OVERNIGHT CONTEXT STRING for the Overnight column
+// BUILD OVERNIGHT STRING
 // ─────────────────────────────────────────────────────────────
 function buildOvernightStr(price, overnightHigh, overnightLow, dayOpen) {
   if (overnightHigh === 0) return "—";
-
-  var distFromHigh = overnightHigh > 0
-    ? ((price - overnightHigh) / overnightHigh) * 100
-    : null;
-  var gapFromOpen = dayOpen > 0 && overnightHigh > 0
-    ? ((dayOpen - overnightHigh) / overnightHigh) * 100
-    : null;
-
+  var distFromHigh = ((price - overnightHigh) / overnightHigh) * 100;
+  var gapFromOpen  = dayOpen > 0 ? ((dayOpen - overnightHigh) / overnightHigh) * 100 : null;
   var parts = [];
   if (overnightHigh > 0) parts.push("OH: $" + overnightHigh.toFixed(2));
   if (overnightLow  > 0) parts.push("OL: $" + overnightLow.toFixed(2));
-  if (distFromHigh !== null) {
-    var tag = Math.abs(distFromHigh) <= BT.OVERNIGHT_TAG_PCT ? " 🚨" : "";
-    parts.push("Δ OH: " + distFromHigh.toFixed(2) + "%" + tag);
-  }
+  var tag = Math.abs(distFromHigh) <= BT.OVERNIGHT_TAG_PCT ? " 🚨" : "";
+  parts.push("Δ OH: " + distFromHigh.toFixed(2) + "%" + tag);
   if (gapFromOpen !== null && Math.abs(gapFromOpen) > 0.05) {
-    parts.push("Open gap: " + gapFromOpen.toFixed(2) + "%");
+    parts.push("Gap: " + gapFromOpen.toFixed(2) + "%");
   }
-
   return parts.join("  |  ");
 }
 
 // ─────────────────────────────────────────────────────────────
-// AI MEMO — 1 sentence via Gemini, every 5 min during window
-// Ultra-short prompt to save tokens
+// AI MEMO — fires only when gate allows (see shouldFireAI)
+// Ultra-short prompt: VIX + ES data baked in as numbers,
+// not extra words. 80 token output = 1 tight sentence.
 // ─────────────────────────────────────────────────────────────
-function getBearTrapAIMemo(metrics, data, cst) {
+function getBearTrapAIMemo(metrics, data, vixData, esData, cst) {
   try {
-    // Use existing cooldown system but shorter for Bear Trap (5 min)
-    var lastStr = getFlag("BT_LAST_AI_TIME");
-    var nowMs   = cst.getTime();
-    if (lastStr && lastStr !== "") {
-      var last    = parseInt(lastStr);
-      var elapsed = (nowMs - last) / 60000;
-      if (!isNaN(last) && elapsed < 4.5) {
-        Logger.log("BearTrap AI cooldown active (" + elapsed.toFixed(1) + " min)");
-        return null;
-      }
-    }
-
     var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
     if (!apiKey) return "⚙️ Add GEMINI_API_KEY to enable AI memos.";
 
-    var prompt = buildBearTrapPrompt(metrics, data);
+    var prompt = buildBearTrapPrompt(metrics, data, vixData, esData);
     Logger.log("BT AI prompt: " + prompt);
 
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens: 80,  // Ultra-short: 1 sentence
-        temperature: 0.3
-      }
+      generationConfig: { maxOutputTokens: 80, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
-      method:             "post",
-      contentType:        "application/json",
-      payload:            payload,
-      muteHttpExceptions: true
+      method: "post", contentType: "application/json",
+      payload: payload, muteHttpExceptions: true
     });
 
     if (resp.getResponseCode() !== 200) {
-      Logger.log("BT Gemini error " + resp.getResponseCode());
+      Logger.log("BT Gemini error: " + resp.getResponseCode());
       return null;
     }
 
@@ -528,11 +682,7 @@ function getBearTrapAIMemo(metrics, data, cst) {
              ? json.candidates[0].content.parts[0].text.trim()
              : null;
 
-    if (text) {
-      setFlag("BT_LAST_AI_TIME", nowMs.toString());
-      return "🤖 " + text;
-    }
-    return null;
+    return text ? "🤖 " + text : null;
 
   } catch (e) {
     Logger.log("getBearTrapAIMemo ERROR: " + e.message);
@@ -541,125 +691,113 @@ function getBearTrapAIMemo(metrics, data, cst) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// BUILD BEAR TRAP AI PROMPT — minimal tokens
+// BUILD AI PROMPT — numbers instead of words to save tokens.
+// ~55 tokens in, 80 tokens out = ~135 tokens per call.
+// At 9 calls/day = ~1,215 tokens/day. Well under free tier.
 // ─────────────────────────────────────────────────────────────
-function buildBearTrapPrompt(metrics, data) {
+function buildBearTrapPrompt(metrics, data, vixData, esData) {
   var overnightTagged = getFlag("BT_OVERNIGHT_TAGGED") === "YES";
   return (
-    "SPY Bear Trap pattern detector. " +
-    "SPY $" + data.price.toFixed(2) + ". " +
-    "Phase: " + metrics.phase + ". " +
-    "Flush: " + Math.abs(metrics.maxFlushPct).toFixed(2) + "%. " +
-    "Vol: " + (metrics.volPct > 0 ? metrics.volPct.toFixed(0) + "% of pace" : "unknown") + ". " +
-    "Confidence: " + metrics.confidence + "%. " +
-    "Overnight high tagged: " + (overnightTagged ? "YES" : "NO") + ". " +
-    "Flip detected: " + (metrics.flipDetected ? "YES" : "NO") + ". " +
-    "In exactly 1 short sentence: current Bear Trap status and what trader should do right now."
+    "SPY Bear Trap detector. " +
+    "$" + data.price.toFixed(2) + " phase:" + metrics.phase + " " +
+    "flush:" + Math.abs(metrics.maxFlushPct).toFixed(2) + "% " +
+    "speed:" + (metrics.flushFast ? "FAST" : "SLOW") + " " +
+    "vol:" + (metrics.volPct > 0 ? metrics.volPct.toFixed(0) + "%" : "?") + " " +
+    "conf:" + metrics.confidence + "% " +
+    "OHtag:" + (overnightTagged ? "Y" : "N") + " " +
+    "flip:" + (metrics.flipDetected ? "Y" : "N") + " " +
+    "VIX:" + (vixData ? vixData.price.toFixed(1) + "/" + vixData.regime : "?") + " " +
+    "ES:" + (esData ? esData.trend : "?") + ". " +
+    "1 sentence: status + action."
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// EOD BRIEF — fires once at ~3:00 CST
-// Grades the morning prediction vs what actually happened
+// EOD BRIEF — fires once at 3:00 CST, logs to SCORECARD
 // ─────────────────────────────────────────────────────────────
 function writeEODBrief(sheet, data, cst) {
   try {
-    var confidence   = getFlag("BT_LAST_CONFIDENCE") || "0";
-    var signalIssued = getFlag("BT_SIGNAL_ISSUED")   || "NO";
-    var signalPrice  = parseFloat(getFlag("BT_SIGNAL_PRICE"))  || 0;
-    var flipTime     = getFlag("BT_FLIP_TIME")        || "—";
-    var maxFlush     = parseFloat(getFlag("BT_MAX_FLUSH_PCT"))  || 0;
-    var sessionHigh  = parseFloat(getFlag("BT_SESSION_HIGH"))   || 0;
-    var dayOpen      = parseFloat(getFlag("BT_DAY_OPEN"))       || 0;
+    var confidence      = getFlag("BT_LAST_CONFIDENCE")  || "0";
+    var signalIssued    = getFlag("BT_SIGNAL_ISSUED")    || "NO";
+    var signalPrice     = parseFloat(getFlag("BT_SIGNAL_PRICE"))  || 0;
+    var flipTime        = getFlag("BT_FLIP_TIME")         || "—";
+    var maxFlush        = parseFloat(getFlag("BT_MAX_FLUSH_PCT"))  || 0;
+    var sessionHigh     = parseFloat(getFlag("BT_SESSION_HIGH"))   || 0;
+    var dayOpen         = parseFloat(getFlag("BT_DAY_OPEN"))       || 0;
     var overnightTagged = getFlag("BT_OVERNIGHT_TAGGED") === "YES";
-    var ripDetected  = getFlag("BT_RIP_DETECTED") === "YES";
-    var flipDetected = getFlag("BT_FLIP_DETECTED") === "YES";
+    var ripDetected     = getFlag("BT_RIP_DETECTED")  === "YES";
+    var flipDetected    = getFlag("BT_FLIP_DETECTED") === "YES";
+    var aiCallCount     = getFlag("BT_AI_CALL_COUNT") || "0";
 
-    // Grade the prediction
     var patternPlayed = ripDetected && flipDetected && Math.abs(maxFlush) >= BT.FLUSH_MIN_PCT;
     var grade, gradeColor;
 
-    if (patternPlayed && signalIssued === "YES") {
-      grade      = "✅ PATTERN CONFIRMED + SIGNAL CORRECT";
-      gradeColor = "#1a4a1a";
-    } else if (patternPlayed && signalIssued !== "YES") {
-      grade      = "⚠️ PATTERN PLAYED — SIGNAL MISSED";
-      gradeColor = "#4a3a00";
-    } else if (!patternPlayed && signalIssued === "YES") {
-      grade      = "❌ SIGNAL ISSUED — PATTERN DID NOT PLAY";
-      gradeColor = "#4a1a1a";
-    } else {
-      grade      = "➡️ NO PATTERN TODAY";
-      gradeColor = "#1a1a3e";
-    }
+    if      (patternPlayed && signalIssued === "YES") { grade = "✅ CONFIRMED + SIGNAL CORRECT"; gradeColor = "#1a4a1a"; }
+    else if (patternPlayed && signalIssued !== "YES") { grade = "⚠️ PATTERN PLAYED — SIGNAL MISSED";  gradeColor = "#4a3a00"; }
+    else if (!patternPlayed && signalIssued === "YES") { grade = "❌ SIGNAL ISSUED — NO PATTERN";     gradeColor = "#4a1a1a"; }
+    else                                               { grade = "➡️ NO PATTERN TODAY";               gradeColor = "#1a1a3e"; }
 
-    // EOD gain/loss context
     var closeVsOpen = dayOpen > 0 ? ((data.price - dayOpen) / dayOpen) * 100 : 0;
-    var highVsOpen  = dayOpen > 0 ? ((sessionHigh - dayOpen) / dayOpen) * 100 : 0;
 
-    // Build AI EOD brief
+    // EOD AI brief (1 call, slightly longer output = 150 tokens)
     var eodMemo = getEODAIMemo({
-      confidence:    confidence,
-      signalIssued:  signalIssued,
-      signalPrice:   signalPrice,
-      currentPrice:  data.price,
-      maxFlush:      maxFlush,
-      flipTime:      flipTime,
-      ripDetected:   ripDetected,
-      flipDetected:  flipDetected,
-      overnightTagged: overnightTagged,
-      closeVsOpen:   closeVsOpen,
-      highVsOpen:    highVsOpen,
-      grade:         grade
+      confidence: confidence, signalIssued: signalIssued,
+      signalPrice: signalPrice, currentPrice: data.price,
+      maxFlush: maxFlush, flipTime: flipTime,
+      ripDetected: ripDetected, flipDetected: flipDetected,
+      overnightTagged: overnightTagged, closeVsOpen: closeVsOpen,
+      grade: grade, aiCallsUsed: aiCallCount
     });
 
     var timeStr = Utilities.formatDate(cst, "America/Chicago", "h:mma").toLowerCase();
 
-    // Separator row
-    sheet.appendRow(["── EOD BRIEF ──", "", "", "", "", "", "", "", "", ""]);
-    var sepRow = sheet.getLastRow();
-    sheet.getRange(sepRow, 1, 1, BT_HEADERS.length)
-      .setBackground(gradeColor)
-      .setFontColor("#ffffff")
-      .setFontWeight("bold")
-      .setFontSize(9)
-      .setFontStyle("italic");
-    sheet.setRowHeight(sepRow, 20);
+    // ── Write separator row ───────────────────────────────────
+    var sepRow = new Array(BT_HEADERS.length).fill("");
+    sepRow[0] = "── EOD BRIEF ──";
+    sepRow[BT_HEADERS.length - 1] = "AI calls today: " + aiCallCount + "/8";
+    sheet.appendRow(sepRow);
+    var sep = sheet.getLastRow();
+    sheet.getRange(sep, 1, 1, BT_HEADERS.length)
+      .setBackground(gradeColor).setFontColor("#ffffff")
+      .setFontWeight("bold").setFontSize(9).setFontStyle("italic");
+    sheet.setRowHeight(sep, 20);
 
-    // Summary row
-    var summaryRow = [
-      timeStr,
-      data.price,
-      grade,
-      "Max flush: " + Math.abs(maxFlush).toFixed(2) + "%",
-      "—",
-      confidence + "%",
-      signalIssued === "YES" ? "Signal @ $" + signalPrice.toFixed(2) : "No signal",
-      "Close vs open: " + closeVsOpen.toFixed(2) + "%",
-      "OH tagged: " + (overnightTagged ? "✅ YES" : "❌ NO"),
-      eodMemo || "—"
-    ];
+    // ── Write summary row ─────────────────────────────────────
+    var summaryRow = new Array(BT_HEADERS.length).fill("—");
+    summaryRow[BTC.TIME - 1]         = timeStr;
+    summaryRow[BTC.PRICE - 1]        = data.price;
+    summaryRow[BTC.PHASE - 1]        = grade;
+    summaryRow[BTC.FLUSH_DEPTH - 1]  = "Max: " + Math.abs(maxFlush).toFixed(2) + "%";
+    summaryRow[BTC.CONFIDENCE - 1]   = confidence + "%";
+    summaryRow[BTC.ENTRY_SIGNAL - 1] = signalIssued === "YES"
+                                        ? "Signal @ $" + signalPrice.toFixed(2) : "No signal";
+    summaryRow[BTC.TARGET_PRICE - 1] = "Close vs open: " + closeVsOpen.toFixed(2) + "%";
+    summaryRow[BTC.OVERNIGHT - 1]    = "OH tagged: " + (overnightTagged ? "✅" : "❌");
+    summaryRow[BTC.AI_MEMO - 1]      = eodMemo || "—";
 
     sheet.appendRow(summaryRow);
     var eodRow = sheet.getLastRow();
     sheet.getRange(eodRow, 1, 1, BT_HEADERS.length)
-      .setBackground(gradeColor)
-      .setFontColor("#e0e0ff")
-      .setFontSize(9)
-      .setWrap(true);
+      .setBackground(gradeColor).setFontColor("#e0e0ff")
+      .setFontSize(9).setWrap(true);
     sheet.setRowHeight(eodRow, 50);
 
-    // Reset daily flags for tomorrow
-    resetDailyBearTrapFlags();
+    // ── Log result to SCORECARD ───────────────────────────────
+    logToScorecard(cst, confidence, signalIssued, signalPrice,
+                   patternPlayed, grade, maxFlush, closeVsOpen,
+                   overnightTagged, aiCallCount);
 
+    // ── Reset for tomorrow ────────────────────────────────────
+    resetDailyBearTrapFlags();
     Logger.log("EOD Brief written: " + grade);
+
   } catch (e) {
     Logger.log("writeEODBrief ERROR: " + e.message);
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-// EOD AI BRIEF — slightly longer (3 sentences) for end-of-day
+// EOD AI BRIEF — 2-3 sentences, 150 token output max
 // ─────────────────────────────────────────────────────────────
 function getEODAIMemo(ctx) {
   try {
@@ -667,16 +805,16 @@ function getEODAIMemo(ctx) {
     if (!apiKey) return null;
 
     var prompt =
-      "SPY Bear Trap Open pattern — end of day review. " +
-      "Morning confidence score: " + ctx.confidence + "%. " +
-      "Signal issued: " + ctx.signalIssued + (ctx.signalPrice > 0 ? " at $" + ctx.signalPrice.toFixed(2) : "") + ". " +
-      "Max morning flush: " + Math.abs(ctx.maxFlush).toFixed(2) + "%. " +
-      "Flip detected: " + ctx.flipDetected + " at " + ctx.flipTime + ". " +
-      "Rip confirmed: " + ctx.ripDetected + ". " +
-      "Overnight high tagged: " + ctx.overnightTagged + ". " +
-      "Close vs open: " + ctx.closeVsOpen.toFixed(2) + "%. " +
-      "Grade: " + ctx.grade + ". " +
-      "In 2-3 sentences: was the Bear Trap prediction accurate, and what was the key signal that mattered most today?";
+      "Bear Trap EOD. Conf:" + ctx.confidence + "% " +
+      "signal:" + ctx.signalIssued + (ctx.signalPrice > 0 ? "@$" + ctx.signalPrice.toFixed(2) : "") + " " +
+      "flush:" + Math.abs(ctx.maxFlush).toFixed(2) + "% " +
+      "flip:" + ctx.flipDetected + "@" + ctx.flipTime + " " +
+      "rip:" + ctx.ripDetected + " " +
+      "OHtag:" + ctx.overnightTagged + " " +
+      "close/open:" + ctx.closeVsOpen.toFixed(2) + "% " +
+      "grade:" + ctx.grade + " " +
+      "AIcalls:" + ctx.aiCallsUsed + "/8. " +
+      "2-3 sentences: accurate? key signal today?";
 
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
@@ -706,14 +844,13 @@ function getEODAIMemo(ctx) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// FORMAT ONE BEAR TRAP DATA ROW
+// FORMAT ONE DATA ROW
 // ─────────────────────────────────────────────────────────────
-function applyBearTrapRowFormat(sheet, rowNum, metrics) {
+function applyBearTrapRowFormat(sheet, rowNum, metrics, vixData, esData) {
   try {
     sheet.setRowHeight(rowNum, 24);
 
-    var fullRow = sheet.getRange(rowNum, 1, 1, BT_HEADERS.length);
-    fullRow
+    sheet.getRange(rowNum, 1, 1, BT_HEADERS.length)
       .setBackground("#0d0d2b")
       .setFontColor("#c0c0e0")
       .setFontFamily("Courier New")
@@ -727,69 +864,79 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics) {
     // PRICE
     sheet.getRange(rowNum, BTC.PRICE)
       .setNumberFormat("$#,##0.00")
-      .setFontColor("#00e5ff")
-      .setFontWeight("bold")
+      .setFontColor("#00e5ff").setFontWeight("bold")
       .setHorizontalAlignment("center");
 
-    // PHASE — color by phase
+    // PHASE
     var phaseCell = sheet.getRange(rowNum, BTC.PHASE);
     phaseCell.setHorizontalAlignment("center").setFontWeight("bold");
-    if (metrics.phase === PHASE.FLUSH) {
-      phaseCell.setFontColor("#ff6b6b");
-    } else if (metrics.phase === PHASE.STALL) {
-      phaseCell.setFontColor("#ffd600");
-    } else if (metrics.phase === PHASE.FLIP) {
-      phaseCell.setFontColor("#00ff99");
-    } else if (metrics.phase === PHASE.RIP) {
-      phaseCell.setFontColor("#00ff99").setFontSize(10);
-    } else {
-      phaseCell.setFontColor("#9090cc");
-    }
+    var phaseColor = metrics.phase === PHASE.FLUSH ? "#ff6b6b"
+                   : metrics.phase === PHASE.STALL ? "#ffd600"
+                   : metrics.phase === PHASE.FLIP  ? "#00ff99"
+                   : metrics.phase === PHASE.RIP   ? "#00ff99"
+                   : "#9090cc";
+    phaseCell.setFontColor(phaseColor);
+    if (metrics.phase === PHASE.RIP) phaseCell.setFontSize(10);
 
-    // FLUSH DEPTH — red for negative
+    // FLUSH DEPTH
     var flushCell = sheet.getRange(rowNum, BTC.FLUSH_DEPTH);
     flushCell.setHorizontalAlignment("center");
-    if (metrics.flushDepthPct < -BT.FLUSH_MIN_PCT) {
-      flushCell.setFontColor("#ff6b6b");
-    } else if (metrics.flushDepthPct > 0.1) {
-      flushCell.setFontColor("#00ff99");
-    } else {
-      flushCell.setFontColor("#9090cc");
-    }
+    flushCell.setFontColor(
+      metrics.flushDepthPct < -BT.FLUSH_MIN_PCT ? "#ff6b6b" :
+      metrics.flushDepthPct > 0.1               ? "#00ff99" : "#9090cc"
+    );
+
+    // FLUSH SPEED
+    var speedCell = sheet.getRange(rowNum, BTC.FLUSH_SPEED);
+    speedCell.setHorizontalAlignment("center");
+    speedCell.setFontColor(metrics.flushFast ? "#ffd600" : "#9090cc");
 
     // VOL SIGNAL
     var volCell = sheet.getRange(rowNum, BTC.VOL_SIGNAL);
     volCell.setHorizontalAlignment("center");
-    if (metrics.volPct > 0 && metrics.volPct < BT.VOLUME_WEAK_PCT) {
-      volCell.setFontColor("#ffd600"); // weak vol = yellow warning
-    } else if (metrics.volPct >= 100) {
-      volCell.setFontColor("#ff6b6b"); // high vol on flush = caution
-    } else {
-      volCell.setFontColor("#9090cc");
+    volCell.setFontColor(
+      (metrics.volPct > 0 && metrics.volPct < BT.VOLUME_WEAK_PCT) ? "#ffd600" :
+      metrics.volPct >= 100 ? "#ff6b6b" : "#9090cc"
+    );
+
+    // VIX — color by regime
+    var vixCell = sheet.getRange(rowNum, BTC.VIX);
+    vixCell.setHorizontalAlignment("center").setFontWeight("bold");
+    if (vixData) {
+      vixCell.setFontColor(
+        vixData.regime === "LOW"      ? "#00ff99" :
+        vixData.regime === "NORMAL"   ? "#aaffaa" :
+        vixData.regime === "ELEVATED" ? "#ffd600" : "#ff6b6b"
+      );
     }
 
-    // CONFIDENCE — green gradient text
-    var confCell   = sheet.getRange(rowNum, BTC.CONFIDENCE);
-    var conf       = metrics.confidence;
-    var confColor  = conf >= 75 ? "#00ff99"
-                   : conf >= 50 ? "#ffd600"
-                   : conf >= 30 ? "#ff9944"
-                   : "#ff6b6b";
-    confCell
-      .setHorizontalAlignment("center")
-      .setFontColor(confColor)
-      .setFontWeight("bold")
-      .setFontSize(10);
+    // ES FUTURES — color by trend
+    var esCell = sheet.getRange(rowNum, BTC.ES_TREND);
+    esCell.setHorizontalAlignment("center").setFontWeight("bold");
+    if (esData) {
+      esCell.setFontColor(
+        esData.trend === "FADING"   ? "#00ff99" :  // fading = trap setup = good
+        esData.trend === "CLIMBING" ? "#ff6b6b" :  // climbing = flush may continue
+        "#ffd600"                                   // flat = neutral
+      );
+    }
 
-    // ENTRY SIGNAL — highlight BUY CALLS
+    // CONFIDENCE
+    var conf      = metrics.confidence;
+    var confColor = conf >= 75 ? "#00ff99"
+                  : conf >= 50 ? "#ffd600"
+                  : conf >= 30 ? "#ff9944"
+                  : "#ff6b6b";
+    sheet.getRange(rowNum, BTC.CONFIDENCE)
+      .setHorizontalAlignment("center")
+      .setFontColor(confColor).setFontWeight("bold").setFontSize(10);
+
+    // ENTRY SIGNAL
     var entryCell = sheet.getRange(rowNum, BTC.ENTRY_SIGNAL);
     entryCell.setHorizontalAlignment("center");
     if (metrics.entrySignal.indexOf("BUY CALLS") !== -1) {
-      entryCell
-        .setBackground("#003300")
-        .setFontColor("#00ff99")
-        .setFontWeight("bold")
-        .setFontSize(10);
+      entryCell.setBackground("#003300").setFontColor("#00ff99")
+               .setFontWeight("bold").setFontSize(10);
     } else if (metrics.entrySignal.indexOf("WATCH") !== -1) {
       entryCell.setFontColor("#ffd600").setFontWeight("bold");
     } else if (metrics.entrySignal.indexOf("MISSED") !== -1) {
@@ -802,22 +949,15 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics) {
 
     // TARGET PRICE
     sheet.getRange(rowNum, BTC.TARGET_PRICE)
-      .setFontColor("#ffd600")
-      .setHorizontalAlignment("center")
-      .setFontWeight("bold");
+      .setFontColor("#ffd600").setHorizontalAlignment("center").setFontWeight("bold");
 
     // OVERNIGHT
     sheet.getRange(rowNum, BTC.OVERNIGHT)
-      .setFontColor("#8888bb")
-      .setFontSize(8)
-      .setHorizontalAlignment("left");
+      .setFontColor("#8888bb").setFontSize(8).setHorizontalAlignment("left");
 
     // AI MEMO
     sheet.getRange(rowNum, BTC.AI_MEMO)
-      .setFontColor("#aaaacc")
-      .setFontSize(8)
-      .setWrap(true)
-      .setHorizontalAlignment("left");
+      .setFontColor("#aaaacc").setFontSize(8).setWrap(true).setHorizontalAlignment("left");
 
   } catch (e) {
     Logger.log("applyBearTrapRowFormat ERROR: " + e.message);
@@ -825,8 +965,7 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// HELPER: Convert ET Date to CST Date object
-// CST = ET - 1 hour
+// CST HELPER
 // ─────────────────────────────────────────────────────────────
 function toCSTDate(etDate) {
   var cstStr = etDate.toLocaleString("en-US", { timeZone: "America/Chicago" });
@@ -834,7 +973,7 @@ function toCSTDate(etDate) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// RESET daily Bear Trap flags at EOD
+// RESET DAILY FLAGS
 // ─────────────────────────────────────────────────────────────
 function resetDailyBearTrapFlags() {
   var keys = [
@@ -842,9 +981,11 @@ function resetDailyBearTrapFlags() {
     "BT_FLUSH_LOW", "BT_MAX_FLUSH_PCT", "BT_FLIP_DETECTED",
     "BT_FLIP_PRICE", "BT_FLIP_TIME", "BT_RIP_DETECTED",
     "BT_OVERNIGHT_HIGH", "BT_OVERNIGHT_LOW", "BT_PREMARKET_CLOSE",
-    "BT_OVERNIGHT_TAGGED", "BT_LAST_AI_TIME", "BT_LAST_CONFIDENCE",
-    "BT_LAST_PHASE", "BT_SIGNAL_ISSUED", "BT_SIGNAL_PRICE",
-    "BT_RECENT_TICKS", "BT_PREOPEN_WRITTEN"
+    "BT_OVERNIGHT_TAGGED", "BT_LAST_CONFIDENCE", "BT_LAST_PHASE",
+    "BT_SIGNAL_ISSUED", "BT_SIGNAL_PRICE", "BT_RECENT_TICKS",
+    "BT_PREOPEN_WRITTEN", "BT_OPEN_TIME_MIN",
+    "BT_LAST_AI_PHASE", "BT_LAST_AI_CONF_BAND", "BT_LAST_AI_SIGNAL",
+    "BT_AI_CALL_COUNT"
   ];
   keys.forEach(function(k) { setFlag(k, ""); });
   Logger.log("Bear Trap daily flags reset.");
