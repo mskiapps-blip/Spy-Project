@@ -6,14 +6,14 @@
 // ============================================================
 
 // ─────────────────────────────────────────────────────────────
-// SCI-FI THEME COLORS — change here to retheme the whole app
+// SCI-FI THEME COLORS
 // ─────────────────────────────────────────────────────────────
 var THEME = {
-  BG_DEEP:     "#0d0d2b",   // Nearly-black navy — header bg
-  BG_MID:      "#1a1a3e",   // Mid-dark navy — sub-header
-  ACCENT_CYAN: "#00e5ff",   // Electric cyan — primary accent
-  ACCENT_GOLD: "#ffd600",   // Gold — CONFIG header
-  TEXT_DIM:    "#9090aa"    // Dimmed secondary text
+  BG_DEEP:     "#0d0d2b",
+  BG_MID:      "#1a1a3e",
+  ACCENT_CYAN: "#00e5ff",
+  ACCENT_GOLD: "#ffd600",
+  TEXT_DIM:    "#9090aa"
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -30,13 +30,22 @@ function setupSheets() {
   setupConfigSheet(configSheet);
   setupHolidaySheet(holidaySheet);
 
-  // Silently fetch holidays (no UI alert from within this call)
-  fetchHolidaysSilent();
+  // ── Holiday fetch is best-effort: if Nasdaq is slow or down,
+  //    we skip it here and use the hardcoded fallback at runtime.
+  //    The user can always refresh manually via the menu later.
+  var holidayNote = "";
+  try {
+    fetchHolidaysSilent();
+    holidayNote = "✅ Holidays loaded.";
+  } catch (e) {
+    Logger.log("setupSheets: holiday fetch skipped — " + e.message);
+    holidayNote = "⚠️ Holidays used fallback list (Nasdaq unreachable).\n   Refresh anytime: Menu → 📅 Refresh Holidays";
+  }
 
   SpreadsheetApp.getUi().alert(
     "🚀 SPY TRACKER READY!\n\n" +
     "✅ Sheets created and themed.\n" +
-    "✅ Holidays loaded.\n" +
+    holidayNote + "\n" +
     "✅ CONFIG initialized.\n\n" +
     "NEXT STEPS:\n" +
     "1. Add GEMINI_API_KEY in:\n" +
@@ -49,15 +58,19 @@ function setupSheets() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Fetch holidays silently (no UI alert) — safe from any context
+// Fetch holidays silently — only runs if the sheet is empty.
+// Throws on network failure so setupSheets() can catch it.
 // ─────────────────────────────────────────────────────────────
 function fetchHolidaysSilent() {
   var ss    = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_HOLIDAYS);
   if (!sheet) sheet = ss.insertSheet(SHEET_HOLIDAYS);
 
-  // Only fetch if sheet is empty
-  if (sheet.getLastRow() > 1) return;
+  // Already populated — nothing to do
+  if (sheet.getLastRow() > 1) {
+    Logger.log("fetchHolidaysSilent: sheet already has data, skipping.");
+    return;
+  }
 
   sheet.clearContents();
   sheet.appendRow(["Holiday Date (YYYY-MM-DD)", "Holiday Name"]);
@@ -84,16 +97,13 @@ function setupLogSheet(ss, sheet) {
   sheet.setTabColor(THEME.ACCENT_CYAN);
 
   if (sheet.getLastRow() > 0) {
-    // Sheet already has content — skip banner/header rewrite but
-    // always re-apply column widths and header notes so running
-    // Setup Sheets again picks up any new notes or width changes.
     Logger.log("SPY LOG already has content — skipping header write.");
     applyColumnWidths(sheet);
-    addVolumeHeaderNotes(sheet);  // always re-stamp notes
+    addVolumeHeaderNotes(sheet);
     return;
   }
 
-  // ── Row 1: Banner ────────────────────────────────────────
+  // ── Row 1: Banner ─────────────────────────────────────────
   sheet.appendRow(["⚡ S P Y   R E A L - T I M E   S C A N N E R  ⚡   |   MARKET INTELLIGENCE SYSTEM v1.0"]);
   var banner = sheet.getRange(1, 1, 1, HEADERS.length);
   banner.merge()
@@ -106,7 +116,7 @@ function setupLogSheet(ss, sheet) {
     .setVerticalAlignment("middle");
   sheet.setRowHeight(1, 36);
 
-  // ── Row 2: Headers ───────────────────────────────────────
+  // ── Row 2: Headers ────────────────────────────────────────
   sheet.appendRow(HEADERS);
   var headerRow = sheet.getRange(2, 1, 1, HEADERS.length);
   headerRow
@@ -118,13 +128,8 @@ function setupLogSheet(ss, sheet) {
     .setVerticalAlignment("middle");
   sheet.setRowHeight(2, 28);
 
-  // Freeze banner + headers
   sheet.setFrozenRows(2);
-
-  // ── Column widths ────────────────────────────────────────
   applyColumnWidths(sheet);
-
-  // ── Header hover-notes on volume + trend columns ─────────
   addVolumeHeaderNotes(sheet);
 
   Logger.log("SPY LOG sheet setup complete.");
@@ -140,7 +145,6 @@ function setupConfigSheet(sheet) {
     sheet.appendRow(["KEY", "VALUE", "NOTES"]);
   }
 
-  // Style header row
   sheet.getRange(1, 1, 1, 3)
     .setBackground(THEME.BG_DEEP)
     .setFontColor(THEME.ACCENT_GOLD)
@@ -151,7 +155,6 @@ function setupConfigSheet(sheet) {
   sheet.setColumnWidth(2, 200);
   sheet.setColumnWidth(3, 350);
 
-  // Write default keys only if sheet is fresh
   if (sheet.getLastRow() <= 1) {
     var defaults = [
       ["MARKET_OPEN_TODAY", "UNKNOWN",  "YES / NO — set by trigger"],

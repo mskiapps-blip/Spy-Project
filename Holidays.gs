@@ -4,9 +4,15 @@
 //          isTodayHoliday() is SILENT — no UI alerts, safe to
 //          call from triggers. fetchAndSaveHolidays() shows an
 //          alert only when called from the menu.
+//
+//  FIX: Added a short fetch timeout so a slow/blocked Nasdaq
+//       API never hangs Setup Sheets or the trigger. If the
+//       fetch times out or fails, the hardcoded fallback list
+//       is used silently instead.
 // ============================================================
 
 var NASDAQ_CALENDAR_URL = "https://api.nasdaq.com/api/calendar/tradingholidays?year=";
+var HOLIDAY_FETCH_TIMEOUT_MS = 5000;  // 5 seconds — give up and use fallback
 
 // ─────────────────────────────────────────────────────────────
 // FETCH AND SAVE HOLIDAYS — called from menu only
@@ -24,7 +30,6 @@ function fetchAndSaveHolidays() {
   var currentYear = new Date().getFullYear();
   var rows        = [];
 
-  // Fetch current year and next year
   [currentYear, currentYear + 1].forEach(function(year) {
     var fetched = fetchHolidaysForYear(year);
     rows        = rows.concat(fetched);
@@ -42,23 +47,31 @@ function fetchAndSaveHolidays() {
 
   Logger.log("Holidays saved: " + rows.length + " entries.");
 
-  // Only show alert when called from the UI (menu)
   try {
     SpreadsheetApp.getUi().alert("✅ Holidays updated! " + rows.length + " dates saved.");
   } catch(e) {
-    // Called from trigger context — no UI available, that's fine
     Logger.log("fetchAndSaveHolidays: no UI context (trigger), skipping alert.");
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-// FETCH for a single year — returns array of [dateStr, name]
+// FETCH for a single year — returns array of [dateStr, name].
+// Hard timeout via muteHttpExceptions + connectTimeout/readTimeout.
+// Falls back to hardcoded list immediately on any failure.
 // ─────────────────────────────────────────────────────────────
 function fetchHolidaysForYear(year) {
   try {
     var url     = NASDAQ_CALENDAR_URL + year;
-    var options = { muteHttpExceptions: true, headers: { "User-Agent": "Mozilla/5.0" } };
-    var resp    = UrlFetchApp.fetch(url, options);
+    var options = {
+      muteHttpExceptions: true,
+      headers:            { "User-Agent": "Mozilla/5.0" },
+      // Apps Script respects these when the underlying Java layer
+      // supports them; they prevent an indefinite hang.
+      connectTimeout: HOLIDAY_FETCH_TIMEOUT_MS,
+      readTimeout:    HOLIDAY_FETCH_TIMEOUT_MS
+    };
+
+    var resp = UrlFetchApp.fetch(url, options);
 
     if (resp.getResponseCode() === 200) {
       var json     = JSON.parse(resp.getContentText());
@@ -76,12 +89,15 @@ function fetchHolidaysForYear(year) {
         Logger.log("Nasdaq returned " + rows.length + " holidays for " + year);
         return rows;
       }
+    } else {
+      Logger.log("Nasdaq non-200 for " + year + ": " + resp.getResponseCode());
     }
+
   } catch (e) {
-    Logger.log("Nasdaq API error for " + year + ": " + e.message);
+    // Timeout or network error — log and fall through to hardcoded list
+    Logger.log("Nasdaq API error/timeout for " + year + ": " + e.message);
   }
 
-  // Fallback to hardcoded list
   Logger.log("Using fallback holidays for " + year);
   return getFallbackHolidays(year);
 }
@@ -95,7 +111,6 @@ function isTodayHoliday(easternDate) {
     var ss      = SpreadsheetApp.getActiveSpreadsheet();
     var sheet   = ss.getSheetByName(SHEET_HOLIDAYS);
 
-    // If sheet missing or empty, silently load fallback holidays into memory
     if (!sheet || sheet.getLastRow() <= 1) {
       Logger.log("No holiday sheet — using in-memory fallback.");
       var year     = easternDate.getFullYear();
@@ -114,7 +129,7 @@ function isTodayHoliday(easternDate) {
 
   } catch (e) {
     Logger.log("isTodayHoliday ERROR: " + e.message);
-    return false; // Fail open — better to run and get no data than to block
+    return false;
   }
 }
 
