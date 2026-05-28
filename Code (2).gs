@@ -23,7 +23,7 @@ var MARKET_CLOSE_MIN  = 0;
 // ─────────────────────────────────────────────────────────────
 // LARGE MOVEMENT THRESHOLD  (absolute % change that fires AI)
 // ─────────────────────────────────────────────────────────────
-var LARGE_MOVE_THRESHOLD = 0.75;
+var LARGE_MOVE_THRESHOLD = 0.45;
 
 // ─────────────────────────────────────────────────────────────
 // BYPASS MARKET HOURS CHECK FOR MANUAL/TEST RUNS
