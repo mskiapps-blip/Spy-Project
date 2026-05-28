@@ -118,9 +118,9 @@ function logTick(data, now) {
   // Trend analysis
   var trendStr = analyzeTrend(data, prevClose, dayOpenPrice);
 
-  // Format date/time
-  var timeStr = Utilities.formatDate(now, "America/New_York", "HH:mm");
-  var dateStr = Utilities.formatDate(now, "America/New_York", "yyyy-MM-dd");
+  // Format date/time — date as M-dd-yyyy, time as 12-hour CST
+  var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mma").toLowerCase();
+  var dateStr = Utilities.formatDate(now, "America/Chicago", "M-dd-yyyy");
 
   // ── BUILD ROW ────────────────────────────────────────────
   var row = [

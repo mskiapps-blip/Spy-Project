@@ -83,10 +83,13 @@ function fetchHolidaysSilent() {
 function setupLogSheet(ss, sheet) {
   sheet.setTabColor(THEME.ACCENT_CYAN);
 
-  // Only write banner + headers if the sheet is empty
   if (sheet.getLastRow() > 0) {
+    // Sheet already has content — skip banner/header rewrite but
+    // always re-apply column widths and header notes so running
+    // Setup Sheets again picks up any new notes or width changes.
     Logger.log("SPY LOG already has content — skipping header write.");
     applyColumnWidths(sheet);
+    addVolumeHeaderNotes(sheet);  // always re-stamp notes
     return;
   }
 
@@ -121,7 +124,7 @@ function setupLogSheet(ss, sheet) {
   // ── Column widths ────────────────────────────────────────
   applyColumnWidths(sheet);
 
-  // ── Header hover-notes on volume columns ─────────────────
+  // ── Header hover-notes on volume + trend columns ─────────
   addVolumeHeaderNotes(sheet);
 
   Logger.log("SPY LOG sheet setup complete.");
