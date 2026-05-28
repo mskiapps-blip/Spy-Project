@@ -1,12 +1,11 @@
 // ============================================================
 // FILE: Formatter.gs
-// PURPOSE: Applies all visual formatting to a data row.
-//          Calls ColorGradient.gs for all color calculations.
-//          Keeps all style decisions in one place for easy tweaks.
+// PURPOSE: Applies all visual formatting to each data row.
+//          All sizes, widths, and formats are adjustable here.
 // ============================================================
 
 // ─────────────────────────────────────────────────────────────
-// ROW FONT SIZES — adjust here to scale the whole log
+// FONT SIZES — adjust here to scale the log
 // ─────────────────────────────────────────────────────────────
 var FONT_SIZES = {
   DATE:          10,
@@ -19,147 +18,140 @@ var FONT_SIZES = {
   VOLUME:        10,
   VOLUME_VS_AVG: 10,
   TREND:         9,
-  AI_MEMO:       8     // Smaller — lots of text, needs to fit
+  AI_MEMO:       8
 };
 
 // ─────────────────────────────────────────────────────────────
-// ROW HEIGHT
+// ROW HEIGHT (pixels)
 // ─────────────────────────────────────────────────────────────
-var ROW_HEIGHT_PX = 22;   // Pixels per data row
+var ROW_HEIGHT_PX = 22;
 
 // ─────────────────────────────────────────────────────────────
-// COLUMN WIDTHS — pixels
+// COLUMN WIDTHS (pixels) — keyed by column number
 // ─────────────────────────────────────────────────────────────
 var COL_WIDTHS = {
-  1:  90,   // DATE
-  2:  75,   // TIME
-  3:  80,   // PRICE
-  4:  90,   // PCT_CHANGE
-  5:  90,   // TICK Δ
-  6:  90,   // TICK %
-  7:  140,  // TICK vs AVG
-  8:  120,  // VOLUME
-  9:  110,  // VOL vs 30D
-  10: 200,  // TREND
-  11: 350   // AI MEMO
+  1: 95,    // DATE
+  2: 75,    // TIME
+  3: 80,    // PRICE
+  4: 90,    // PCT CHANGE
+  5: 85,    // TICK Δ
+  6: 85,    // TICK %
+  7: 130,   // TICK vs AVG
+  8: 120,   // VOLUME
+  9: 105,   // VOL vs 30D
+  10: 195,  // TREND
+  11: 340   // AI MEMO
 };
 
 // ─────────────────────────────────────────────────────────────
-// NUMBER FORMATS per column
+// NUMBER FORMATS
 // ─────────────────────────────────────────────────────────────
-var NUMBER_FORMATS = {
+var NUM_FMT = {
   PRICE:       "$#,##0.00",
   PCT_CHANGE:  "0.00\"%\"",
-  TICK_CHANGE: "#,##0.00",
+  TICK_CHANGE: "0.00",
   TICK_PCT:    "0.000\"%\"",
   VOLUME:      "#,##0"
 };
 
 // ─────────────────────────────────────────────────────────────
-// MAIN: Apply all formatting to a freshly written data row
-// log:       Sheet object
-// rowNum:    Row number (integer)
-// price:     SPY price (number)
-// pctChange: % vs prev close (number)
-// tickPct:   % change since last tick (number or "—")
-// volume:    Today's cumulative volume (number)
-// volPct:    Volume vs 30d avg as % (number)
-// avgVol30:  30-day avg volume (number)
+// MAIN: Apply formatting to one data row
 // ─────────────────────────────────────────────────────────────
 function applyRowFormatting(log, rowNum, price, pctChange, tickPct, volume, volPct, avgVol30) {
+  try {
+    log.setRowHeight(rowNum, ROW_HEIGHT_PX);
 
-  // ── Row height ────────────────────────────────────────────
-  log.setRowHeight(rowNum, ROW_HEIGHT_PX);
+    // Base: white background, dark text, center aligned
+    var fullRow = log.getRange(rowNum, 1, 1, HEADERS.length);
+    fullRow
+      .setBackground(COLOR_THRESHOLDS.NEUTRAL)
+      .setFontColor("#1a1a2e")
+      .setVerticalAlignment("middle")
+      .setFontFamily("Arial");
 
-  // ── Base row style: white BG, dark text, standard font ───
-  var fullRow = log.getRange(rowNum, 1, 1, HEADERS.length);
-  fullRow
-    .setBackground(COLOR_THRESHOLDS.NEUTRAL)
-    .setFontColor("#1a1a2e")
-    .setVerticalAlignment("middle");
+    // DATE
+    styleCell(log, rowNum, COL.DATE,
+      null, FONT_SIZES.DATE, "center", null, null);
 
-  // ── COLUMN: Date ─────────────────────────────────────────
-  styleCell(log, rowNum, COL.DATE, null, FONT_SIZES.DATE, "left", null, null);
+    // TIME
+    styleCell(log, rowNum, COL.TIME,
+      null, FONT_SIZES.TIME, "center", null, null);
 
-  // ── COLUMN: Time ─────────────────────────────────────────
-  styleCell(log, rowNum, COL.TIME, null, FONT_SIZES.TIME, "center", null, null);
+    // PRICE — same color as pctChange (pctChange is the anchor)
+    var priceBg = getPctChangeColor(pctChange);
+    styleCell(log, rowNum, COL.PRICE,
+      priceBg, FONT_SIZES.PRICE, "center", getTextColor(priceBg), NUM_FMT.PRICE);
 
-  // ── COLUMN: Price — same BG as pctChange ─────────────────
-  var priceBg   = getPctChangeColor(pctChange);
-  var priceText = getTextColor(priceBg);
-  styleCell(log, rowNum, COL.PRICE,
-    priceBg, FONT_SIZES.PRICE, "center", priceText, NUMBER_FORMATS.PRICE);
+    // PCT CHANGE
+    var pctBg = getPctChangeColor(pctChange);
+    styleCell(log, rowNum, COL.PCT_CHANGE,
+      pctBg, FONT_SIZES.PCT_CHANGE, "center", getTextColor(pctBg), NUM_FMT.PCT_CHANGE);
 
-  // ── COLUMN: Pct Change ───────────────────────────────────
-  var pctBg   = getPctChangeColor(pctChange);
-  var pctText = getTextColor(pctBg);
-  styleCell(log, rowNum, COL.PCT_CHANGE,
-    pctBg, FONT_SIZES.PCT_CHANGE, "center", pctText, NUMBER_FORMATS.PCT_CHANGE);
+    // TICK CHANGE (raw price)
+    styleCell(log, rowNum, COL.TICK_CHANGE,
+      null, FONT_SIZES.TICK_CHANGE, "center", null, NUM_FMT.TICK_CHANGE);
 
-  // ── COLUMN: Tick Change (raw price diff) ─────────────────
-  styleCell(log, rowNum, COL.TICK_CHANGE,
-    null, FONT_SIZES.TICK_CHANGE, "center", null, NUMBER_FORMATS.TICK_CHANGE);
+    // TICK PCT — own gradient
+    var tickPctNum = (typeof tickPct === "number" && !isNaN(tickPct)) ? tickPct : null;
+    var tickBg     = tickPctNum !== null ? getTickPctColor(tickPctNum) : COLOR_THRESHOLDS.NEUTRAL;
+    styleCell(log, rowNum, COL.TICK_PCT,
+      tickBg, FONT_SIZES.TICK_PCT, "center", getTextColor(tickBg),
+      tickPctNum !== null ? NUM_FMT.PCT_CHANGE : null);
 
-  // ── COLUMN: Tick Pct — own gradient ──────────────────────
-  var tickPctNum = (typeof tickPct === "number") ? tickPct : null;
-  var tickBg   = tickPctNum !== null ? getTickPctColor(tickPctNum) : COLOR_THRESHOLDS.NEUTRAL;
-  var tickText = getTextColor(tickBg);
-  styleCell(log, rowNum, COL.TICK_PCT,
-    tickBg, FONT_SIZES.TICK_PCT, "center", tickText,
-    tickPctNum !== null ? NUMBER_FORMATS.PCT_CHANGE : null);
+    // TICK vs AVG (text only)
+    styleCell(log, rowNum, COL.TICK_VS_AVG,
+      null, FONT_SIZES.TICK_VS_AVG, "center", null, null);
 
-  // ── COLUMN: Tick vs Avg ──────────────────────────────────
-  styleCell(log, rowNum, COL.TICK_VS_AVG,
-    null, FONT_SIZES.TICK_VS_AVG, "center", null, null);
+    // VOLUME — colored by volPct
+    var volBg = getVolumeColor(volPct);
+    styleCell(log, rowNum, COL.VOLUME,
+      volBg, FONT_SIZES.VOLUME, "center", getTextColor(volBg), NUM_FMT.VOLUME);
 
-  // ── COLUMN: Volume ────────────────────────────────────────
-  var volBg   = getVolumeColor(volPct);
-  var volText = getTextColor(volBg);
-  styleCell(log, rowNum, COL.VOLUME,
-    volBg, FONT_SIZES.VOLUME, "center", volText, NUMBER_FORMATS.VOLUME);
+    // VOL vs 30D — same color as volume
+    styleCell(log, rowNum, COL.VOLUME_VS_AVG,
+      volBg, FONT_SIZES.VOLUME_VS_AVG, "center", getTextColor(volBg), null);
 
-  // ── COLUMN: Volume vs 30d avg ────────────────────────────
-  styleCell(log, rowNum, COL.VOLUME_VS_AVG,
-    volBg, FONT_SIZES.VOLUME_VS_AVG, "center", volText, null);
+    // TREND
+    styleCell(log, rowNum, COL.TREND,
+      "#f0f4ff", FONT_SIZES.TREND, "left", "#1a1a2e", null);
 
-  // ── COLUMN: Trend ────────────────────────────────────────
-  styleCell(log, rowNum, COL.TREND,
-    "#f0f4ff", FONT_SIZES.TREND, "left", "#1a1a2e", null);
+    // AI MEMO
+    var memoCell = log.getRange(rowNum, COL.AI_MEMO);
+    memoCell
+      .setBackground("#fafafa")
+      .setFontSize(FONT_SIZES.AI_MEMO)
+      .setHorizontalAlignment("left")
+      .setFontColor("#333344")
+      .setWrap(true);
 
-  // ── COLUMN: AI Memo ──────────────────────────────────────
-  styleCell(log, rowNum, COL.AI_MEMO,
-    "#fafafa", FONT_SIZES.AI_MEMO, "left", "#333344", null);
-  // Allow text to wrap in the memo cell
-  log.getRange(rowNum, COL.AI_MEMO).setWrap(true);
-
-  // ── Alternate row zebra (very subtle) ────────────────────
-  // Odd rows: pure white; Even rows: barely-there gray
-  // Only applies to cells that aren't already color-coded
-  if (rowNum % 2 === 0) {
-    var dateBg = log.getRange(rowNum, COL.DATE).getBackground();
-    if (dateBg === "#ffffff" || dateBg === COLOR_THRESHOLDS.NEUTRAL) {
-      log.getRange(rowNum, COL.DATE).setBackground("#f9f9fc");
-      log.getRange(rowNum, COL.TIME).setBackground("#f9f9fc");
+    // Subtle zebra striping on non-colored cells
+    if (rowNum % 2 === 0) {
+      var dateBg = log.getRange(rowNum, COL.DATE).getBackground();
+      if (dateBg === "#ffffff" || dateBg === COLOR_THRESHOLDS.NEUTRAL) {
+        log.getRange(rowNum, COL.DATE).setBackground("#f7f7fc");
+        log.getRange(rowNum, COL.TIME).setBackground("#f7f7fc");
+      }
     }
+
+  } catch (e) {
+    Logger.log("applyRowFormatting ERROR at row " + rowNum + ": " + e.message);
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-// HELPER: Style a single cell cleanly
-// bg, textColor: pass null to skip that property
-// format:        number format string or null
+// HELPER: Style a single cell; null = skip that property
 // ─────────────────────────────────────────────────────────────
 function styleCell(sheet, row, col, bg, fontSize, align, textColor, format) {
   var cell = sheet.getRange(row, col);
-  if (bg !== null)        cell.setBackground(bg);
-  if (textColor !== null) cell.setFontColor(textColor);
-  if (fontSize)           cell.setFontSize(fontSize);
-  if (align)              cell.setHorizontalAlignment(align);
-  if (format)             cell.setNumberFormat(format);
+  if (bg        !== null && bg        !== undefined) cell.setBackground(bg);
+  if (textColor !== null && textColor !== undefined) cell.setFontColor(textColor);
+  if (fontSize)  cell.setFontSize(fontSize);
+  if (align)     cell.setHorizontalAlignment(align);
+  if (format)    cell.setNumberFormat(format);
 }
 
 // ─────────────────────────────────────────────────────────────
-// SETUP: Apply column widths (called once during sheet setup)
+// HELPER: Apply column widths to a sheet
 // ─────────────────────────────────────────────────────────────
 function applyColumnWidths(sheet) {
   for (var col in COL_WIDTHS) {

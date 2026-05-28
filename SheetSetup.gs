@@ -1,122 +1,141 @@
 // ============================================================
 // FILE: SheetSetup.gs
-// PURPOSE: Creates and styles all required sheets on first run.
-//          Applies the sci-fi theme to the header area and
-//          configures the CONFIG sheet with default values.
-//          Run once via the menu: ⚡ SPY TRACKER → Setup Sheets
+// PURPOSE: Creates and styles all required sheets.
+//          Run ONCE via menu: ⚡ SPY TRACKER → Setup Sheets
+//          Safe to re-run — won't duplicate data.
 // ============================================================
 
 // ─────────────────────────────────────────────────────────────
-// SCI-FI THEME COLORS — change these to retheme the whole app
+// SCI-FI THEME COLORS — change here to retheme the whole app
 // ─────────────────────────────────────────────────────────────
 var THEME = {
-  BG_DEEP:      "#0d0d2b",   // Nearly-black navy — main header bg
-  BG_MID:       "#1a1a3e",   // Mid-dark navy — sub-header
-  ACCENT_CYAN:  "#00e5ff",   // Electric cyan — primary accent
-  ACCENT_GOLD:  "#ffd600",   // Gold — highlight / warning
-  ACCENT_GREEN: "#00ff88",   // Neon green
-  ACCENT_RED:   "#ff3d5e",   // Neon red
-  TEXT_MAIN:    "#e0e0ff",   // Light lavender white — body text
-  TEXT_DIM:     "#9090aa",   // Dimmed — secondary text
-  BORDER:       "#2a2a55"    // Subtle border color
+  BG_DEEP:     "#0d0d2b",   // Nearly-black navy — header bg
+  BG_MID:      "#1a1a3e",   // Mid-dark navy — sub-header
+  ACCENT_CYAN: "#00e5ff",   // Electric cyan — primary accent
+  ACCENT_GOLD: "#ffd600",   // Gold — CONFIG header
+  TEXT_DIM:    "#9090aa"    // Dimmed secondary text
 };
 
 // ─────────────────────────────────────────────────────────────
-// MAIN SETUP FUNCTION — run once via the menu
+// MAIN SETUP — run once from menu
 // ─────────────────────────────────────────────────────────────
 function setupSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // ── Create sheets if they don't exist ────────────────────
-  var logSheet      = getOrCreateSheet(ss, SHEET_LOG);
-  var configSheet   = getOrCreateSheet(ss, SHEET_CONFIG);
-  var holidaySheet  = getOrCreateSheet(ss, SHEET_HOLIDAYS);
+  var logSheet     = getOrCreateSheet(ss, SHEET_LOG);
+  var configSheet  = getOrCreateSheet(ss, SHEET_CONFIG);
+  var holidaySheet = getOrCreateSheet(ss, SHEET_HOLIDAYS);
 
-  // ── Style each sheet ─────────────────────────────────────
-  styleLogSheet(ss, logSheet);
-  styleConfigSheet(configSheet);
-  styleHolidaySheet(holidaySheet);
+  setupLogSheet(ss, logSheet);
+  setupConfigSheet(configSheet);
+  setupHolidaySheet(holidaySheet);
 
-  // ── Populate CONFIG defaults ─────────────────────────────
-  populateConfigDefaults(configSheet);
-
-  // ── Fetch holidays ────────────────────────────────────────
-  fetchAndSaveHolidays();
+  // Silently fetch holidays (no UI alert from within this call)
+  fetchHolidaysSilent();
 
   SpreadsheetApp.getUi().alert(
     "🚀 SPY TRACKER READY!\n\n" +
     "✅ Sheets created and themed.\n" +
     "✅ Holidays loaded.\n" +
     "✅ CONFIG initialized.\n\n" +
-    "Next steps:\n" +
-    "1. Add your GEMINI_API_KEY in Extensions → Apps Script\n" +
-    "   → Project Settings → Script Properties\n\n" +
-    "2. Install the 5-min trigger:\n" +
+    "NEXT STEPS:\n" +
+    "1. Add GEMINI_API_KEY in:\n" +
+    "   Extensions → Apps Script → Project Settings\n" +
+    "   → Script Properties → Add property\n\n" +
+    "2. Install trigger:\n" +
     "   Menu → ⚡ SPY TRACKER → Install 5-Min Trigger\n\n" +
     "3. Test: Menu → ⚡ SPY TRACKER → Run Now (Manual Tick)"
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// STYLE: SPY LOG sheet — sci-fi dashboard look
+// Fetch holidays silently (no UI alert) — safe from any context
 // ─────────────────────────────────────────────────────────────
-function styleLogSheet(ss, sheet) {
-  // ── Sheet-level ───────────────────────────────────────────
-  sheet.setTabColor(THEME.ACCENT_CYAN);
-  ss.setActiveSheet(sheet);
+function fetchHolidaysSilent() {
+  var ss    = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_HOLIDAYS);
+  if (!sheet) sheet = ss.insertSheet(SHEET_HOLIDAYS);
 
-  // ── Title banner (row 1 is reserved for the big title) ───
-  // We'll use a merged row above the headers for the banner.
-  // First, insert a blank row at top if headers aren't set yet
-  if (sheet.getLastRow() === 0) {
-    // Insert banner row
-    sheet.insertRowBefore(1);
-    var bannerRange = sheet.getRange(1, 1, 1, HEADERS.length);
-    bannerRange.merge();
-    bannerRange
-      .setValue("⚡ S P Y   R E A L - T I M E   S C A N N E R  ⚡   |   MARKET INTELLIGENCE SYSTEM v1.0")
-      .setBackground(THEME.BG_DEEP)
-      .setFontColor(THEME.ACCENT_CYAN)
-      .setFontWeight("bold")
-      .setFontSize(13)
-      .setHorizontalAlignment("center")
-      .setVerticalAlignment("middle");
-    sheet.setRowHeight(1, 36);
+  // Only fetch if sheet is empty
+  if (sheet.getLastRow() > 1) return;
 
-    // Write headers on row 2
-    sheet.appendRow(HEADERS);
-    var headerRow = sheet.getRange(2, 1, 1, HEADERS.length);
-    headerRow
-      .setBackground(THEME.BG_MID)
-      .setFontColor(THEME.ACCENT_CYAN)
-      .setFontWeight("bold")
-      .setFontSize(10)
-      .setHorizontalAlignment("center")
-      .setVerticalAlignment("middle");
-    sheet.setRowHeight(2, 28);
-    sheet.setFrozenRows(2);
+  sheet.clearContents();
+  sheet.appendRow(["Holiday Date (YYYY-MM-DD)", "Holiday Name"]);
+
+  var currentYear = new Date().getFullYear();
+  var rows = [];
+  [currentYear, currentYear + 1].forEach(function(year) {
+    rows = rows.concat(fetchHolidaysForYear(year));
+  });
+
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, 2).setValues(rows);
   }
-
-  // ── Apply column widths ───────────────────────────────────
-  applyColumnWidths(sheet);
-
-  // ── Sheet tab color ──────────────────────────────────────
-  sheet.setTabColor("#00bcd4");
+  Logger.log("fetchHolidaysSilent: " + rows.length + " holidays loaded.");
 }
 
 // ─────────────────────────────────────────────────────────────
-// STYLE: CONFIG sheet
+// SPY LOG sheet setup
+// Row 1: Sci-fi banner (merged)
+// Row 2: Column headers
+// Row 3+: Data
 // ─────────────────────────────────────────────────────────────
-function styleConfigSheet(sheet) {
-  sheet.setTabColor("#ffd600");
-  sheet.setName(SHEET_CONFIG);
+function setupLogSheet(ss, sheet) {
+  sheet.setTabColor(THEME.ACCENT_CYAN);
 
-  // Header
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(["⚙️ KEY", "VALUE", "NOTES"]);
+  // Only write banner + headers if the sheet is empty
+  if (sheet.getLastRow() > 0) {
+    Logger.log("SPY LOG already has content — skipping header write.");
+    applyColumnWidths(sheet);
+    return;
   }
-  var header = sheet.getRange(1, 1, 1, 3);
-  header
+
+  // ── Row 1: Banner ────────────────────────────────────────
+  sheet.appendRow(["⚡ S P Y   R E A L - T I M E   S C A N N E R  ⚡   |   MARKET INTELLIGENCE SYSTEM v1.0"]);
+  var banner = sheet.getRange(1, 1, 1, HEADERS.length);
+  banner.merge()
+    .setValue("⚡ S P Y   R E A L - T I M E   S C A N N E R  ⚡   |   MARKET INTELLIGENCE SYSTEM v1.0")
+    .setBackground(THEME.BG_DEEP)
+    .setFontColor(THEME.ACCENT_CYAN)
+    .setFontWeight("bold")
+    .setFontSize(13)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+  sheet.setRowHeight(1, 36);
+
+  // ── Row 2: Headers ───────────────────────────────────────
+  sheet.appendRow(HEADERS);
+  var headerRow = sheet.getRange(2, 1, 1, HEADERS.length);
+  headerRow
+    .setBackground(THEME.BG_MID)
+    .setFontColor(THEME.ACCENT_CYAN)
+    .setFontWeight("bold")
+    .setFontSize(10)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+  sheet.setRowHeight(2, 28);
+
+  // Freeze banner + headers
+  sheet.setFrozenRows(2);
+
+  // ── Column widths ────────────────────────────────────────
+  applyColumnWidths(sheet);
+
+  Logger.log("SPY LOG sheet setup complete.");
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONFIG sheet setup
+// ─────────────────────────────────────────────────────────────
+function setupConfigSheet(sheet) {
+  sheet.setTabColor(THEME.ACCENT_GOLD);
+
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(["KEY", "VALUE", "NOTES"]);
+  }
+
+  // Style header row
+  sheet.getRange(1, 1, 1, 3)
     .setBackground(THEME.BG_DEEP)
     .setFontColor(THEME.ACCENT_GOLD)
     .setFontWeight("bold")
@@ -125,37 +144,45 @@ function styleConfigSheet(sheet) {
   sheet.setColumnWidth(1, 200);
   sheet.setColumnWidth(2, 200);
   sheet.setColumnWidth(3, 350);
-}
 
-// ─────────────────────────────────────────────────────────────
-// CONFIG DEFAULT VALUES — what gets pre-populated
-// ─────────────────────────────────────────────────────────────
-function populateConfigDefaults(sheet) {
-  var defaults = [
-    ["MARKET_OPEN_TODAY", "UNKNOWN",        "Set by trigger: YES / NO"],
-    ["PREV_PRICE",        "",               "Last logged SPY price"],
-    ["PREV_CLOSE_PRICE",  "",               "Previous session close"],
-    ["DAY_OPEN_PRICE",    "",               "Price at first tick today"],
-    ["PRICE_HISTORY",     "",               "Comma-separated closes for EMA"],
-    ["AVG_TICK_SIZE",     "",               "Rolling avg absolute tick change"],
-    ["TICK_COUNT",        "",               "Number of ticks logged today"],
-    ["LAST_AI_CALL_TIME", "",               "Unix ms of last Gemini call"],
-  ];
-
-  var existing = sheet.getLastRow();
-  // Only write defaults if CONFIG sheet is mostly empty
-  if (existing <= 1) {
+  // Write default keys only if sheet is fresh
+  if (sheet.getLastRow() <= 1) {
+    var defaults = [
+      ["MARKET_OPEN_TODAY", "UNKNOWN",  "YES / NO — set by trigger"],
+      ["PREV_PRICE",        "",         "Last logged SPY price"],
+      ["PREV_CLOSE_PRICE",  "",         "Previous session close"],
+      ["DAY_OPEN_PRICE",    "",         "Price at first tick of the day"],
+      ["PRICE_HISTORY",     "",         "Comma-separated closes for EMA calc"],
+      ["AVG_TICK_SIZE",     "",         "Rolling exponential avg tick size"],
+      ["TICK_COUNT",        "",         "Ticks logged today"],
+      ["LAST_AI_CALL_TIME", "",         "Unix ms timestamp of last Gemini call"]
+    ];
     sheet.getRange(2, 1, defaults.length, 3).setValues(defaults);
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-// HELPER: Get existing sheet or create a new one
+// HOLIDAYS sheet styling
+// ─────────────────────────────────────────────────────────────
+function setupHolidaySheet(sheet) {
+  sheet.setTabColor("#ff6b6b");
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(["Holiday Date (YYYY-MM-DD)", "Holiday Name"]);
+  }
+  sheet.getRange(1, 1, 1, 2)
+    .setBackground(THEME.BG_DEEP)
+    .setFontColor(THEME.ACCENT_CYAN)
+    .setFontWeight("bold")
+    .setFontSize(11);
+  sheet.setColumnWidth(1, 180);
+  sheet.setColumnWidth(2, 250);
+}
+
+// ─────────────────────────────────────────────────────────────
+// HELPER: Get or create a sheet by name
 // ─────────────────────────────────────────────────────────────
 function getOrCreateSheet(ss, name) {
   var sheet = ss.getSheetByName(name);
-  if (!sheet) {
-    sheet = ss.insertSheet(name);
-  }
+  if (!sheet) sheet = ss.insertSheet(name);
   return sheet;
 }
