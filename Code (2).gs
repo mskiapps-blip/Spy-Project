@@ -2,6 +2,7 @@
 // FILE: Code.gs
 // PURPOSE: Main entry point. Handles the 5-minute trigger,
 //          market open/close checks, and wires everything together.
+//          Includes 🪤 Bear Trap pattern detection hook.
 // ============================================================
 
 // ─────────────────────────────────────────────────────────────
@@ -64,6 +65,12 @@ function runEvery5Minutes() {
         }
         Logger.log("Market closed at ET " + h + ":" + m + " — skipping.");
         setFlag("MARKET_OPEN_TODAY", "NO");
+
+        // ── Bear Trap: still run at EOD (3:00 CST = 4:00 ET) ──
+        // EOD brief fires just after market close
+        var data = fetchSPYData();
+        if (data) runBearTrapTick(data, now);
+
         return;
       }
     } else {
@@ -80,8 +87,12 @@ function runEvery5Minutes() {
     }
     Logger.log("SPY price fetched: " + data.price);
 
+    // ── Main SPY log tick ────────────────────────────────────
     logTick(data, now);
     Logger.log("Tick logged successfully.");
+
+    // ── Bear Trap pattern detection (8:30–9:15 CST + EOD) ───
+    runBearTrapTick(data, now);
 
   } catch (e) {
     Logger.log("runEvery5Minutes ERROR: " + e.message + "\n" + e.stack);
@@ -100,7 +111,6 @@ function runManualTick() {
     ensureSheetsExist(ss);
 
     // Attach volume header notes if not already present
-    // (safe to call repeatedly — just overwrites the note)
     var logSheet = ss.getSheetByName(SHEET_LOG);
     if (logSheet) addVolumeHeaderNotes(logSheet);
 
@@ -115,7 +125,15 @@ function runManualTick() {
     Logger.log("SPY price: " + data.price);
 
     logTick(data, now);
-    SpreadsheetApp.getUi().alert("✅ Tick logged!\nSPY: $" + data.price.toFixed(2) + "\nCheck the SPY LOG sheet.");
+
+    // Also fire Bear Trap tick on manual run for testing
+    runBearTrapTick(data, now);
+
+    SpreadsheetApp.getUi().alert(
+      "✅ Tick logged!\n" +
+      "SPY: $" + data.price.toFixed(2) + "\n" +
+      "Check the SPY LOG and 🪤 BEAR TRAP sheets."
+    );
 
   } catch (e) {
     Logger.log("runManualTick ERROR: " + e.message + "\n" + e.stack);
@@ -135,12 +153,14 @@ function ensureSheetsExist(ss) {
   if (!ss.getSheetByName(SHEET_CONFIG)) {
     var c = ss.insertSheet(SHEET_CONFIG);
     c.setTabColor("#ffd600");
-    // Write header row
     c.appendRow(["KEY", "VALUE", "NOTES"]);
   }
   if (!ss.getSheetByName(SHEET_HOLIDAYS)) {
     var h = ss.insertSheet(SHEET_HOLIDAYS);
     h.appendRow(["Holiday Date (YYYY-MM-DD)", "Holiday Name"]);
+  }
+  if (!ss.getSheetByName(SHEET_BEAR_TRAP)) {
+    setupBearTrapSheet(ss);
   }
 }
 
@@ -211,13 +231,14 @@ function getFlag(key) {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("⚡ SPY TRACKER")
-    .addItem("🗑️  Clear Logger Data",       "clearLogData")
-    .addItem("📅  Refresh Holidays",         "fetchAndSaveHolidays")
-    .addItem("🔧  Setup Sheets",             "setupSheets")
-    .addItem("▶️  Run Now (Manual Tick)",    "runManualTick")
+    .addItem("🗑️  Clear Logger Data",         "clearLogData")
+    .addItem("📅  Refresh Holidays",           "fetchAndSaveHolidays")
+    .addItem("🔧  Setup Sheets",               "setupSheets")
+    .addItem("🪤  Setup Bear Trap Sheet",      "setupBearTrapSheetFromMenu")
+    .addItem("▶️  Run Now (Manual Tick)",      "runManualTick")
     .addSeparator()
-    .addItem("⏰  Install 5-Min Trigger",    "installTrigger")
-    .addItem("🛑  Remove All Triggers",      "removeAllTriggers")
+    .addItem("⏰  Install 5-Min Trigger",      "installTrigger")
+    .addItem("🛑  Remove All Triggers",        "removeAllTriggers")
     .addToUi();
 }
 
@@ -247,21 +268,32 @@ function clearLogData() {
   var ui = SpreadsheetApp.getUi();
   var response = ui.alert(
     "⚠️ Clear All Log Data?",
-    "This will erase all logged ticks. Headers stay. Continue?",
+    "This will erase all logged ticks from SPY LOG and BEAR TRAP. Headers stay. Continue?",
     ui.ButtonSet.YES_NO
   );
   if (response !== ui.Button.YES) return;
 
   var ss  = SpreadsheetApp.getActiveSpreadsheet();
+
+  // ── Clear SPY LOG ────────────────────────────────────────
   var log = ss.getSheetByName(SHEET_LOG);
   if (!log) { ui.alert("Sheet '" + SHEET_LOG + "' not found."); return; }
 
   var lastRow = log.getLastRow();
-  // Keep rows 1 and 2 (banner + headers), delete everything after
   if (lastRow > 2) {
     log.deleteRows(3, lastRow - 2);
   }
 
+  // ── Clear BEAR TRAP (keep banner + legend + headers = 3 rows) ──
+  var btSheet = ss.getSheetByName(SHEET_BEAR_TRAP);
+  if (btSheet) {
+    var btLastRow = btSheet.getLastRow();
+    if (btLastRow > 3) {
+      btSheet.deleteRows(4, btLastRow - 3);
+    }
+  }
+
+  // ── Reset SPY LOG state flags ────────────────────────────
   setFlag("DAY_OPEN_PRICE",   "");
   setFlag("PREV_PRICE",       "");
   setFlag("PREV_CLOSE_PRICE", "");
@@ -269,5 +301,8 @@ function clearLogData() {
   setFlag("AVG_TICK_SIZE",    "");
   setFlag("TICK_COUNT",       "");
 
-  ui.alert("✅ Log cleared!");
+  // ── Reset Bear Trap daily flags ──────────────────────────
+  resetDailyBearTrapFlags();
+
+  ui.alert("✅ Log cleared!\nSPY LOG and 🪤 BEAR TRAP both reset.");
 }
