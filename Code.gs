@@ -2,7 +2,7 @@
 // FILE: Code.gs
 // PURPOSE: Main entry point. Handles the 5-minute trigger,
 //          market open/close checks, and wires everything together.
-//          Includes 🪤 Bear Trap and 📊 Scorecard hooks.
+//          Includes 🪤 Bear Trap, 📊 Scorecard, 🌅 Morning Brief.
 // ============================================================
 
 // ─────────────────────────────────────────────────────────────
@@ -61,12 +61,29 @@ function runEvery5Minutes() {
         Logger.log("Market closed at ET " + h + ":" + m + " — skipping.");
         setFlag("MARKET_OPEN_TODAY", "NO");
 
-        // Bear Trap still needs to fire at 3:00 CST for EOD brief
+        // ── Bear Trap EOD + Morning Brief EOD still need to fire ──
+        // Both check for 3:00 CST (= 4:00 ET) internally
         var closingData = fetchSPYData();
-        if (closingData) runBearTrapTick(closingData, now);
-
+        if (closingData) {
+          runBearTrapTick(closingData, now);
+          runMorningBriefTick(closingData, now);
+        }
         return;
       }
+
+      // ── Pre-market window: Morning Brief fires at 8:25 CST ──
+      // 8:25 CST = 9:25 ET — market not open yet but we still fire
+      var etHour = now.getHours();
+      var etMin  = now.getMinutes();
+      var etMins = etHour * 60 + etMin;
+      // 9:25 ET = 505 mins.  9:30 ET open = 570 mins.
+      if (etMins >= 565 && etMins < 570) {
+        // 9:25–9:29 ET = 8:25–8:29 CST — Morning Brief window
+        var preData = fetchSPYData();
+        if (preData) runMorningBriefTick(preData, now);
+        return;
+      }
+
     } else {
       Logger.log("BYPASS_MARKET_HOURS = true — skipping time checks.");
     }
@@ -86,6 +103,9 @@ function runEvery5Minutes() {
 
     // ── Bear Trap (8:30–9:15 CST active + 3:00 CST EOD) ─────
     runBearTrapTick(data, now);
+
+    // ── Morning Brief (price tracking during market hours) ───
+    runMorningBriefTick(data, now);
 
   } catch (e) {
     Logger.log("runEvery5Minutes ERROR: " + e.message + "\n" + e.stack);
@@ -115,12 +135,14 @@ function runManualTick() {
 
     logTick(data, now);
     runBearTrapTick(data, now);
+    runMorningBriefTick(data, now);
 
     SpreadsheetApp.getUi().alert(
       "✅ Tick logged!\n" +
       "SPY: $" + data.price.toFixed(2) + "\n\n" +
       "Check:\n" +
       "  📈 SPY LOG\n" +
+      "  🌅 MORNING BRIEF\n" +
       "  🪤 BEAR TRAP\n" +
       "  📊 SCORECARD"
     );
@@ -128,6 +150,45 @@ function runManualTick() {
   } catch (e) {
     Logger.log("runManualTick ERROR: " + e.message + "\n" + e.stack);
     SpreadsheetApp.getUi().alert("❌ Error: " + e.message + "\n\nSee Apps Script logs.");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// MANUAL MORNING BRIEF — run the brief right now for testing
+// ─────────────────────────────────────────────────────────────
+function runManualMorningBrief() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    ensureSheetsExist(ss);
+
+    var now  = getCurrentEasternTime();
+    var data = fetchSPYData();
+    if (!data) {
+      SpreadsheetApp.getUi().alert("❌ Could not fetch SPY data.");
+      return;
+    }
+
+    var cst      = toCSTDate(now);
+    var todayStr = Utilities.formatDate(cst, "America/Chicago", "yyyy-MM-dd");
+    var sheet    = ss.getSheetByName(SHEET_MORNING_BRIEF);
+    if (!sheet) {
+      setupMorningBriefSheet(ss);
+      sheet = ss.getSheetByName(SHEET_MORNING_BRIEF);
+    }
+
+    // Force-clear the "already fired today" flag so it runs fresh
+    setFlag("MB_BRIEF_FIRED_TODAY", "");
+    generateMorningBrief(sheet, data, cst, todayStr);
+    setFlag("MB_BRIEF_FIRED_TODAY", todayStr);
+
+    SpreadsheetApp.getUi().alert(
+      "✅ Morning Brief generated!\n\n" +
+      "Check the 🌅 MORNING BRIEF sheet.\n" +
+      "Summary panel also written to 🪤 BEAR TRAP."
+    );
+  } catch (e) {
+    Logger.log("runManualMorningBrief ERROR: " + e.message);
+    SpreadsheetApp.getUi().alert("❌ Error: " + e.message);
   }
 }
 
@@ -144,13 +205,17 @@ function ensureSheetsExist(ss) {
     c.appendRow(["KEY", "VALUE", "NOTES"]);
   }
   if (!ss.getSheetByName(SHEET_HOLIDAYS)) {
-    ss.insertSheet(SHEET_HOLIDAYS).appendRow(["Holiday Date (YYYY-MM-DD)", "Holiday Name"]);
+    ss.insertSheet(SHEET_HOLIDAYS)
+      .appendRow(["Holiday Date (YYYY-MM-DD)", "Holiday Name"]);
   }
   if (!ss.getSheetByName(SHEET_BEAR_TRAP)) {
     setupBearTrapSheet(ss);
   }
   if (!ss.getSheetByName(SHEET_SCORECARD)) {
     setupScorecardSheet(ss);
+  }
+  if (!ss.getSheetByName(SHEET_MORNING_BRIEF)) {
+    setupMorningBriefSheet(ss);
   }
 }
 
@@ -214,15 +279,18 @@ function getFlag(key) {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("⚡ SPY TRACKER")
-    .addItem("🗑️  Clear Logger Data",         "clearLogData")
-    .addItem("📅  Refresh Holidays",           "fetchAndSaveHolidays")
-    .addItem("🔧  Setup Sheets",               "setupSheets")
-    .addItem("🪤  Setup Bear Trap Sheet",      "setupBearTrapSheetFromMenu")
-    .addItem("📊  Setup Scorecard Sheet",      "setupScorecardSheetFromMenu")
-    .addItem("▶️  Run Now (Manual Tick)",      "runManualTick")
+    .addItem("🗑️  Clear Logger Data",            "clearLogData")
+    .addItem("📅  Refresh Holidays",              "fetchAndSaveHolidays")
+    .addItem("🔧  Setup Sheets",                  "setupSheets")
+    .addItem("🌅  Setup Morning Brief Sheet",     "setupMorningBriefSheetFromMenu")
+    .addItem("🪤  Setup Bear Trap Sheet",         "setupBearTrapSheetFromMenu")
+    .addItem("📊  Setup Scorecard Sheet",         "setupScorecardSheetFromMenu")
     .addSeparator()
-    .addItem("⏰  Install 5-Min Trigger",      "installTrigger")
-    .addItem("🛑  Remove All Triggers",        "removeAllTriggers")
+    .addItem("▶️  Run Now (Manual Tick)",         "runManualTick")
+    .addItem("🌅  Run Morning Brief Now",         "runManualMorningBrief")
+    .addSeparator()
+    .addItem("⏰  Install 5-Min Trigger",         "installTrigger")
+    .addItem("🛑  Remove All Triggers",           "removeAllTriggers")
     .addToUi();
 }
 
@@ -249,7 +317,10 @@ function clearLogData() {
   var ui = SpreadsheetApp.getUi();
   var response = ui.alert(
     "⚠️ Clear All Log Data?",
-    "Erases all logged ticks from SPY LOG and BEAR TRAP.\n" +
+    "Erases all logged ticks from:\n" +
+    "  📈 SPY LOG\n" +
+    "  🪤 BEAR TRAP\n" +
+    "  🌅 MORNING BRIEF (chart data only)\n\n" +
     "SCORECARD history is preserved.\n\nContinue?",
     ui.ButtonSet.YES_NO
   );
@@ -257,25 +328,31 @@ function clearLogData() {
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Clear SPY LOG (keep rows 1–2: banner + headers)
-  var log     = ss.getSheetByName(SHEET_LOG);
+  // Clear SPY LOG (keep rows 1–2)
+  var log = ss.getSheetByName(SHEET_LOG);
   if (!log) { ui.alert("Sheet '" + SHEET_LOG + "' not found."); return; }
-  var lastRow = log.getLastRow();
-  if (lastRow > 2) log.deleteRows(3, lastRow - 2);
+  if (log.getLastRow() > 2) log.deleteRows(3, log.getLastRow() - 2);
 
-  // Clear BEAR TRAP (keep rows 1–3: banner + legend + headers)
-  var btSheet   = ss.getSheetByName(SHEET_BEAR_TRAP);
-  var btLastRow = btSheet ? btSheet.getLastRow() : 0;
-  if (btSheet && btLastRow > 3) btSheet.deleteRows(4, btLastRow - 3);
+  // Clear BEAR TRAP (keep rows 1–3)
+  var bt = ss.getSheetByName(SHEET_BEAR_TRAP);
+  if (bt && bt.getLastRow() > 3) bt.deleteRows(4, bt.getLastRow() - 3);
 
-  // Reset SPY LOG state flags
-  ["DAY_OPEN_PRICE", "PREV_PRICE", "PREV_CLOSE_PRICE",
-   "PRICE_HISTORY",  "AVG_TICK_SIZE", "TICK_COUNT"].forEach(function(k) {
+  // Clear MORNING BRIEF chart data (keep rows 1–20)
+  var mb = ss.getSheetByName(SHEET_MORNING_BRIEF);
+  if (mb && mb.getLastRow() > 20) mb.deleteRows(21, mb.getLastRow() - 20);
+
+  // Reset state flags
+  ["DAY_OPEN_PRICE","PREV_PRICE","PREV_CLOSE_PRICE",
+   "PRICE_HISTORY","AVG_TICK_SIZE","TICK_COUNT"].forEach(function(k) {
     setFlag(k, "");
   });
 
-  // Reset Bear Trap daily flags
   resetDailyBearTrapFlags();
+  resetDailyMorningBriefFlags();
 
-  ui.alert("✅ Log cleared!\nSPY LOG and 🪤 BEAR TRAP reset.\n📊 SCORECARD history preserved.");
+  ui.alert(
+    "✅ Log cleared!\n\n" +
+    "SPY LOG, 🪤 BEAR TRAP, and 🌅 MORNING BRIEF reset.\n" +
+    "📊 SCORECARD history preserved."
+  );
 }
