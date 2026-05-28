@@ -99,6 +99,11 @@ function runManualTick() {
     // Make sure sheets exist before anything else
     ensureSheetsExist(ss);
 
+    // Attach volume header notes if not already present
+    // (safe to call repeatedly — just overwrites the note)
+    var logSheet = ss.getSheetByName(SHEET_LOG);
+    if (logSheet) addVolumeHeaderNotes(logSheet);
+
     var now = getCurrentEasternTime();
     Logger.log("Manual tick at ET: " + now.toString());
 

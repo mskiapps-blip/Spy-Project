@@ -119,31 +119,53 @@ function getTickPctColor(tickPctValue) {
 
 // ─────────────────────────────────────────────────────────────
 // CORE: Get background color for VOLUME vs 30-day average.
-// volPct: number, e.g. 150 = 150% of average
+// volPct:      number — today's vol as % of 30d avg (e.g. 150 = 150%)
+// rawVolume:   number — today's raw cumulative volume (used as fallback
+//              when avgVol30 is unavailable so we still show some color)
+// avgVol30:    number — the 30-day average daily volume
+//
+// COLOR LOGIC:
+//   volPct >= 100  → orange gradient (above average)
+//   volPct < 100   → blue gradient   (below average)
+//   volPct == 0 but rawVolume > 0 → pale orange (data present, no avg yet)
+//   everything else → white (no data)
 // ─────────────────────────────────────────────────────────────
-function getVolumeColor(volPct) {
-  if (typeof volPct !== "number" || isNaN(volPct) || volPct === 0) {
-    return COLOR_THRESHOLDS.NEUTRAL;
+function getVolumeColor(volPct, rawVolume, avgVol30) {
+  // Normalize inputs
+  volPct    = (typeof volPct    === "number" && !isNaN(volPct))    ? volPct    : 0;
+  rawVolume = (typeof rawVolume === "number" && !isNaN(rawVolume)) ? rawVolume : 0;
+  avgVol30  = (typeof avgVol30  === "number" && !isNaN(avgVol30))  ? avgVol30  : 0;
+
+  // ── Case 1: We have a valid comparison ratio ──────────────
+  if (volPct > 0) {
+    if (volPct >= 100) {
+      // Above average — orange gradient
+      var intensity = normalizeValue(
+        volPct,
+        COLOR_THRESHOLDS.VOLUME_HIGH_MIN,
+        COLOR_THRESHOLDS.VOLUME_HIGH_MAX
+      );
+      return interpolateRGB(PALETTE.VOL_HIGH_PALE, PALETTE.VOL_HIGH_DEEP, intensity);
+    } else {
+      // Below average — blue gradient (lower = deeper blue)
+      var intensity = normalizeValue(
+        100 - volPct,
+        0,
+        100 - COLOR_THRESHOLDS.VOLUME_LOW_MIN
+      );
+      return interpolateRGB(PALETTE.VOL_LOW_PALE, PALETTE.VOL_LOW_DEEP, intensity);
+    }
   }
 
-  if (volPct >= 100) {
-    // Above average — orange gradient
-    var intensity = normalizeValue(
-      volPct,
-      COLOR_THRESHOLDS.VOLUME_HIGH_MIN,
-      COLOR_THRESHOLDS.VOLUME_HIGH_MAX
-    );
-    return interpolateRGB(PALETTE.VOL_HIGH_PALE, PALETTE.VOL_HIGH_DEEP, intensity);
-  } else {
-    // Below average — blue gradient
-    // Invert: lower volume = deeper blue
-    var intensity = normalizeValue(
-      100 - volPct,
-      0,
-      100 - COLOR_THRESHOLDS.VOLUME_LOW_MIN
-    );
-    return interpolateRGB(PALETTE.VOL_LOW_PALE, PALETTE.VOL_LOW_DEEP, intensity);
+  // ── Case 2: No 30d avg yet, but we DO have raw volume ─────
+  // Show a very pale orange so the cell isn't just white —
+  // it signals "trading is happening, comparison pending"
+  if (rawVolume > 0 && avgVol30 === 0) {
+    return interpolateRGB(PALETTE.VOL_HIGH_PALE, PALETTE.VOL_HIGH_DEEP, 0.08);
   }
+
+  // ── Case 3: No data at all ────────────────────────────────
+  return COLOR_THRESHOLDS.NEUTRAL;
 }
 
 // ─────────────────────────────────────────────────────────────

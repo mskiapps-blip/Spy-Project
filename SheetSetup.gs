@@ -121,6 +121,9 @@ function setupLogSheet(ss, sheet) {
   // ── Column widths ────────────────────────────────────────
   applyColumnWidths(sheet);
 
+  // ── Header hover-notes on volume columns ─────────────────
+  addVolumeHeaderNotes(sheet);
+
   Logger.log("SPY LOG sheet setup complete.");
 }
 
