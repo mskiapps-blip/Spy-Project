@@ -1,7 +1,8 @@
 // ============================================================
 // FILE: DataFetcher.gs
 // PURPOSE: Fetches live SPY data from Yahoo Finance (free, no key).
-//          Uses the v8 chart endpoint with a timeout-safe fetch.
+//          Uses the v8 chart endpoint. Now also computes VWAP
+//          from intraday 5-min bars.
 // ============================================================
 
 var YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart/SPY";
@@ -17,7 +18,6 @@ function fetchSPYData() {
     var options = {
       muteHttpExceptions: true,
       headers: {
-        // Some Yahoo endpoints need a browser-like User-Agent
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
       }
     };
@@ -62,15 +62,23 @@ function fetchSPYData() {
 
     // ── Intraday bar data ─────────────────────────────────────
     var quotes  = result.indicators && result.indicators.quote && result.indicators.quote[0];
+    var highs   = (quotes && quotes.high)   || [];
+    var lows    = (quotes && quotes.low)    || [];
     var closes  = (quotes && quotes.close)  || [];
     var volumes = (quotes && quotes.volume) || [];
 
-    // Sum bar volumes as a more accurate intraday volume
+    // Sum bar volumes for intraday total
     var volumeToday = 0;
     volumes.forEach(function(v) { if (v != null) volumeToday += v; });
     if (volumeToday === 0) volumeToday = volume;
 
-    // ── 30-day average volume (cached — barely moves intraday) ─
+    // ── VWAP: cumulative(typical_price × volume) / cumulative(volume)
+    // Typical price = (high + low + close) / 3 per bar.
+    // Skip bars with null/zero data to avoid skewing the result.
+    var vwap = computeVWAP(highs, lows, closes, volumes);
+    Logger.log("VWAP: " + vwap);
+
+    // ── 30-day average volume (cached ~6h) ──────────────────
     var avgVol30 = fetch30DayAvgVolume();
 
     return {
@@ -81,6 +89,7 @@ function fetchSPYData() {
       dayLow:      dayLow,
       volumeToday: volumeToday,
       avgVol30:    avgVol30,
+      vwap:        vwap,
       closes:      closes,
       volumes:     volumes
     };
@@ -92,10 +101,36 @@ function fetchSPYData() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Fetch 30-day daily bars → average daily volume.
-// Cached for 6 hours via CacheService — the 30-day average does
-// not meaningfully change within a single trading session, so we
-// avoid a second Yahoo round-trip on every 5-minute tick.
+// VWAP CALCULATOR
+// Uses intraday 5-min bars: typical price = (H + L + C) / 3.
+// Returns 0 if there are no valid bars yet.
+// ─────────────────────────────────────────────────────────────
+function computeVWAP(highs, lows, closes, volumes) {
+  var cumTPV = 0;  // cumulative (typical price × volume)
+  var cumVol = 0;  // cumulative volume
+
+  var len = Math.min(highs.length, lows.length, closes.length, volumes.length);
+
+  for (var i = 0; i < len; i++) {
+    var h = highs[i];
+    var l = lows[i];
+    var c = closes[i];
+    var v = volumes[i];
+
+    // Skip null or zero-volume bars (pre-market stubs, etc.)
+    if (h == null || l == null || c == null || v == null || v === 0) continue;
+
+    var typicalPrice = (h + l + c) / 3;
+    cumTPV += typicalPrice * v;
+    cumVol += v;
+  }
+
+  if (cumVol === 0) return 0;
+  return Math.round((cumTPV / cumVol) * 100) / 100;  // round to 2 decimal places
+}
+
+// ─────────────────────────────────────────────────────────────
+// 30-DAY AVERAGE VOLUME (cached 6 hours)
 // ─────────────────────────────────────────────────────────────
 function fetch30DayAvgVolume() {
   var cache = CacheService.getScriptCache();

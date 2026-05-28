@@ -18,8 +18,13 @@ var COL = {
   TICK_VS_AVG:   7,   // G  (tick compared to rolling average)
   VOLUME:        8,   // H
   VOLUME_VS_AVG: 9,   // I  (% of 30-day avg)
-  TREND:         10,  // J
-  AI_MEMO:       11   // K
+  VWAP:          10,  // J  ← NEW
+  S1:            11,  // K  ← NEW (nearest support + distance)
+  S2:            12,  // L  ← NEW (2nd support + distance)
+  R1:            13,  // M  ← NEW (nearest resistance + distance)
+  R2:            14,  // N  ← NEW (2nd resistance + distance)
+  TREND:         15,  // O  (shifted)
+  AI_MEMO:       16   // P  (shifted)
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -35,6 +40,11 @@ var HEADERS = [
   "📈 TICK vs AVG",
   "📦 VOLUME TODAY",
   "🔥 VOL vs 30D",
+  "〰️ VWAP",
+  "🟢 S1",
+  "🟢 S2",
+  "🔴 R1",
+  "🔴 R2",
   "🌐 TREND STATUS",
   "🤖 AI MEMO"
 ];
@@ -53,8 +63,6 @@ function logTick(data, now) {
   }
 
   // ── Ensure sheet has at least a header row ────────────────
-  // If sheet is completely empty, write a simple header row now.
-  // (setupSheets writes a fancier banner+header — this is the fallback.)
   if (log.getLastRow() === 0) {
     log.appendRow(HEADERS);
     var hr = log.getRange(1, 1, 1, HEADERS.length);
@@ -104,16 +112,34 @@ function logTick(data, now) {
     else                    tickVsAvg = "😴 QUIET ("   + ratio.toFixed(1) + "x)";
   }
 
-  // Volume vs 30-day average, adjusted for time of day.
-  // We compare today's CUMULATIVE volume against the fraction of a
-  // full-day average that should have traded by now — so 100% means
-  // "on pace for an average day," not "already hit a full day's volume."
-  var dayFraction = getSessionFractionElapsed(now);
+  // Volume vs 30-day average, adjusted for time of day
+  var dayFraction   = getSessionFractionElapsed(now);
   var expectedSoFar = (data.avgVol30 > 0 && dayFraction > 0)
     ? data.avgVol30 * dayFraction
     : 0;
   var volPct    = (expectedSoFar > 0) ? (data.volumeToday / expectedSoFar) * 100 : 0;
   var volPctStr = (volPct > 0) ? volPct.toFixed(1) + "%" : "—";
+
+  // ── VWAP ─────────────────────────────────────────────────
+  var vwap        = data.vwap || 0;
+  var vwapDisplay = (vwap > 0) ? vwap : "—";
+  var vwapDiffPct = (vwap > 0) ? ((data.price - vwap) / vwap) * 100 : null;
+
+  // ── S/R ZONES ─────────────────────────────────────────────
+  // getTopSRZones returns { supports: [...], resistances: [...] }
+  // each entry: { label, price, distPct }
+  var srZones = getTopSRZones(data, prevClose, dayOpenPrice);
+
+  // Format each zone as "LABEL $xxx.xx (0.12%)"
+  function formatZone(zone) {
+    if (!zone) return "—";
+    return zone.label + "  $" + zone.price.toFixed(2) + "  (" + zone.distPct.toFixed(2) + "%)";
+  }
+
+  var s1Str = formatZone(srZones.supports[0]);
+  var s2Str = formatZone(srZones.supports[1]);
+  var r1Str = formatZone(srZones.resistances[0]);
+  var r2Str = formatZone(srZones.resistances[1]);
 
   // Trend analysis
   var trendStr = analyzeTrend(data, prevClose, dayOpenPrice);
@@ -133,8 +159,13 @@ function logTick(data, now) {
     tickVsAvg,
     data.volumeToday,
     volPctStr,
-    trendStr,
-    ""   // AI memo — filled below if triggered
+    vwapDisplay,   // J
+    s1Str,         // K
+    s2Str,         // L
+    r1Str,         // M
+    r2Str,         // N
+    trendStr,      // O
+    ""             // P — AI memo filled below if triggered
   ];
 
   // ── WRITE ROW ────────────────────────────────────────────
@@ -143,7 +174,13 @@ function logTick(data, now) {
   Logger.log("Row written at row " + newRow);
 
   // ── APPLY FORMATTING ─────────────────────────────────────
-  applyRowFormatting(log, newRow, data.price, pctChange, tickPct, data.volumeToday, volPct, data.avgVol30);
+  applyRowFormatting(
+    log, newRow,
+    data.price, pctChange, tickPct,
+    data.volumeToday, volPct, data.avgVol30,
+    vwap, vwapDiffPct,
+    srZones
+  );
 
   // ── AI MEMO: fire on large movements ─────────────────────
   if (Math.abs(pctChange) >= LARGE_MOVE_THRESHOLD && prevPrice !== 0) {
@@ -161,25 +198,20 @@ function logTick(data, now) {
 
 // ─────────────────────────────────────────────────────────────
 // SESSION FRACTION ELAPSED
-// Returns 0–1: how far through the 9:30–16:00 ET session we are.
-// Used to scale the 30-day full-day average down to a fair
-// "expected volume by now" benchmark for the VOLUME color.
-// Clamped to a small minimum so the very first tick doesn't divide
-// by ~0 and explode the percentage.
 // ─────────────────────────────────────────────────────────────
 function getSessionFractionElapsed(easternDate) {
   var h = easternDate.getHours();
   var m = easternDate.getMinutes();
   var nowMins   = h * 60 + m;
-  var openMins  = MARKET_OPEN_HOUR  * 60 + MARKET_OPEN_MIN;   // 570
-  var closeMins = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MIN;  // 960
-  var sessionLen = closeMins - openMins;                      // 390 min
+  var openMins  = MARKET_OPEN_HOUR  * 60 + MARKET_OPEN_MIN;
+  var closeMins = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MIN;
+  var sessionLen = closeMins - openMins;
 
   var elapsed = nowMins - openMins;
-  if (elapsed <= 0) return 0.02;          // pre/at open — tiny floor
-  if (elapsed >= sessionLen) return 1;    // at/after close
+  if (elapsed <= 0) return 0.02;
+  if (elapsed >= sessionLen) return 1;
   var frac = elapsed / sessionLen;
-  return Math.max(0.02, frac);            // never below 2% of the day
+  return Math.max(0.02, frac);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -208,7 +240,7 @@ function finalizeDaySummary() {
   var log = ss.getSheetByName(SHEET_LOG);
   if (!log || log.getLastRow() < 2) return;
 
-  log.appendRow(["── DAY CLOSE ──", "", "", "", "", "", "", "", "", "Session ended.", ""]);
+  log.appendRow(["── DAY CLOSE ──", "", "", "", "", "", "", "", "", "", "", "", "", "", "Session ended.", ""]);
   var lastRow = log.getLastRow();
   log.getRange(lastRow, 1, 1, HEADERS.length)
      .setBackground("#1a1a3e")
@@ -217,9 +249,7 @@ function finalizeDaySummary() {
      .setFontSize(9);
 
   setFlag("DAY_OPEN_PRICE", "");
-  setFlag("PREV_PRICE",     "");   // FIX #4: clear so first tick tomorrow
-                                   // shows a dash instead of computing a
-                                   // tick-delta against yesterday's close.
+  setFlag("PREV_PRICE",     "");
   setFlag("AVG_TICK_SIZE",  "");
   setFlag("TICK_COUNT",     "");
   setFlag("PRICE_HISTORY",  "");
