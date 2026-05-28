@@ -1,23 +1,73 @@
 // ============================================================
 // FILE: BearTrapSetup.gs
 // PURPOSE: Creates and styles the 🪤 BEAR TRAP sheet.
-//          Updated for new columns: FLUSH SPEED, VIX, ES FUTURES.
+//          Updated for new columns: TRAP ALERT, FLUSH SPEED,
+//          VIX, ES FUTURES. Refined typography and layout.
+//
+//  FONT DESIGN:
+//    Banner:  Georgia — elegant serif, great for display titles
+//    Headers: Trebuchet MS — sharp, readable, modern feel
+//    Data:    Arial — clean, crisp, easy to scan quickly
+//    Alert:   Impact — maximum visual weight for the danger cell
 // ============================================================
 
+// ── TYPOGRAPHY ────────────────────────────────────────────────
+var BT_FONT = {
+  BANNER:  "Georgia",
+  HEADER:  "Trebuchet MS",
+  DATA:    "Arial",
+  ALERT:   "Arial Black",   // bold sans for the alarm cell
+  MONO:    "Roboto Mono"    // price/number cells — clean mono
+};
+
+// ── PALETTE ───────────────────────────────────────────────────
+var BT_COLOR = {
+  // Backgrounds
+  BG_BANNER:   "#0f0000",   // near-black with red warmth
+  BG_LEGEND:   "#130000",   // slightly lighter, warm dark
+  BG_HEADER:   "#1c0505",   // header row — deep burgundy
+  BG_ROW:      "#0a0a12",   // default data row — deep navy-black
+  BG_ROW_ALT:  "#0d0d18",   // subtle zebra (every other row)
+
+  // Row-level alert backgrounds
+  BG_DANGER:   "#250000",   // dark red wash — DO NOT BUY PUTS
+  BG_CAUTION:  "#1a1000",   // dark amber — stall / possible trap
+  BG_READY:    "#001a08",   // dark green — flip / enter
+  BG_GO:       "#002a0a",   // richer green — BUY CALLS / RIP
+
+  // Text
+  TEXT_DIM:    "#7a7a9a",   // timestamps, quiet data
+  TEXT_BASE:   "#d0d0e8",   // normal data
+  TEXT_PRICE:  "#4fc3f7",   // SPY price — cool blue
+  TEXT_RED:    "#ff5252",   // flush / danger
+  TEXT_GOLD:   "#ffca28",   // warnings / stall
+  TEXT_GREEN:  "#69f0ae",   // flip / go signal
+  TEXT_BRIGHT: "#ffffff",   // maximum contrast for alert cells
+
+  // Header accent
+  HDR_TEXT:    "#ff6b6b",   // header label color
+  HDR_ACCENT:  "#ff8a80",   // lighter accent for subtext
+
+  // Banner
+  BAN_TEXT:    "#ff4444",
+  BAN_SUB:     "#cc6633"
+};
+
 var BT_COL_WIDTHS = {
-  1:  80,   // TIME
-  2:  90,   // PRICE
-  3:  130,  // PHASE
-  4:  100,  // FLUSH DEPTH
-  5:  140,  // FLUSH SPEED (NEW)
-  6:  120,  // VOL SIGNAL
-  7:  120,  // VIX (NEW)
-  8:  140,  // ES FUTURES (NEW)
-  9:  100,  // CONFIDENCE
-  10: 220,  // ENTRY SIGNAL
-  11: 110,  // TARGET PRICE
-  12: 260,  // OVERNIGHT
-  13: 380   // AI MEMO
+  1:  82,   // TIME
+  2:  95,   // PRICE
+  3:  235,  // TRAP ALERT — widest, most important
+  4:  125,  // PHASE
+  5:  105,  // FLUSH DEPTH
+  6:  145,  // FLUSH SPEED
+  7:  120,  // VOL SIGNAL
+  8:  125,  // VIX
+  9:  145,  // ES FUTURES
+  10: 95,   // CONFIDENCE
+  11: 215,  // ENTRY SIGNAL
+  12: 115,  // TARGET PRICE
+  13: 255,  // OVERNIGHT
+  14: 360   // AI MEMO
 };
 
 function setupBearTrapSheet(ss) {
@@ -26,7 +76,7 @@ function setupBearTrapSheet(ss) {
   var sheet = ss.getSheetByName(SHEET_BEAR_TRAP);
   if (!sheet) sheet = ss.insertSheet(SHEET_BEAR_TRAP);
 
-  sheet.setTabColor("#ff4444");
+  sheet.setTabColor("#cc2200");
 
   if (sheet.getLastRow() > 0) {
     applyBearTrapColumnWidths(sheet);
@@ -36,29 +86,40 @@ function setupBearTrapSheet(ss) {
   }
 
   // ── Row 1: Banner ─────────────────────────────────────────
-  sheet.appendRow(["🪤  B E A R   T R A P   O P E N   |   Pattern Confidence System   |   Active: 8:30–9:15 CST"]);
+  sheet.appendRow(["🪤  Bear Trap Open  ·  Pattern Confidence System  ·  Active 8:30 – 9:15 CST"]);
   sheet.getRange(1, 1, 1, BT_HEADERS.length).merge()
-    .setBackground("#1a0000").setFontColor("#ff4444")
-    .setFontWeight("bold").setFontSize(13).setFontFamily("Courier New")
-    .setHorizontalAlignment("center").setVerticalAlignment("middle");
-  sheet.setRowHeight(1, 36);
+    .setBackground(BT_COLOR.BG_BANNER)
+    .setFontColor(BT_COLOR.BAN_TEXT)
+    .setFontWeight("bold")
+    .setFontSize(15)
+    .setFontFamily(BT_FONT.BANNER)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+  sheet.setRowHeight(1, 42);
 
   // ── Row 2: Pattern legend ─────────────────────────────────
-  sheet.appendRow(["THE PATTERN: Overnight high tagged → Open flushes red (0.3–0.8%) FAST on weak volume → Stalls → Momentum flip → 🚀 Rip. VIX 15–22 + ES FADING = highest confidence."]);
+  sheet.appendRow(["The Pattern:  Overnight high tagged  →  Fast flush on weak volume  →  Stall  →  Flip  →  🚀 Rip.  Watch the 🚨 Trap Alert column — a red row means DO NOT BUY PUTS."]);
   sheet.getRange(2, 1, 1, BT_HEADERS.length).merge()
-    .setBackground("#0d0d0d").setFontColor("#ff9944")
-    .setFontSize(9).setFontFamily("Courier New")
-    .setHorizontalAlignment("left").setVerticalAlignment("middle")
+    .setBackground(BT_COLOR.BG_LEGEND)
+    .setFontColor(BT_COLOR.BAN_SUB)
+    .setFontSize(9)
+    .setFontFamily(BT_FONT.HEADER)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle")
     .setFontStyle("italic");
   sheet.setRowHeight(2, 22);
 
   // ── Row 3: Column headers ─────────────────────────────────
   sheet.appendRow(BT_HEADERS);
   sheet.getRange(3, 1, 1, BT_HEADERS.length)
-    .setBackground("#1a0a0a").setFontColor("#ff4444")
-    .setFontWeight("bold").setFontSize(10).setFontFamily("Courier New")
-    .setHorizontalAlignment("center").setVerticalAlignment("middle");
-  sheet.setRowHeight(3, 28);
+    .setBackground(BT_COLOR.BG_HEADER)
+    .setFontColor(BT_COLOR.HDR_TEXT)
+    .setFontWeight("bold")
+    .setFontSize(9)
+    .setFontFamily(BT_FONT.HEADER)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+  sheet.setRowHeight(3, 30);
 
   sheet.setFrozenRows(3);
   applyBearTrapColumnWidths(sheet);
@@ -92,6 +153,29 @@ function addBearTrapHeaderNotes(sheet) {
     "after the morning flush — that's the trap springing."
   );
 
+  sheet.getRange(h, BTC.TRAP_ALERT).setNote(
+    "🚨 TRAP ALERT — Plain-English Status\n─────────────────────\n" +
+    "The single most important column. One glance tells you\n" +
+    "exactly what to do right now. No math, no interpretation.\n\n" +
+    "DURING A FLUSH (confidence ≥50%):\n" +
+    "  🚨 DO NOT BUY PUTS     — Row turns RED\n" +
+    "     Bear Trap is forming. This flush is likely fake.\n" +
+    "     Buying puts here is exactly what the trap wants.\n\n" +
+    "  ⚠️ POSSIBLE TRAP        — Orange warning\n" +
+    "     Early signal, not yet confirmed. Avoid puts.\n\n" +
+    "STALL PHASE:\n" +
+    "  ⚠️ STALL — DO NOT BUY PUTS\n" +
+    "     Flush losing steam. Reversal is close. Stay patient.\n\n" +
+    "AFTER FLIP:\n" +
+    "  ⚡ FLIP DETECTED        — Row turns GOLD\n" +
+    "     First green tick after flush. Watch the target price.\n\n" +
+    "GO SIGNALS:\n" +
+    "  ✅ ENTER CALLS NOW      — Row turns GREEN\n" +
+    "     Score ≥75%, flip confirmed. Wait for Target Price cross.\n\n" +
+    "  🚀 RIP CONFIRMED        — Bright green\n" +
+    "     Pattern played. Manage your position."
+  );
+
   sheet.getRange(h, BTC.PHASE).setNote(
     "📍 PHASE\n─────────────────────\n" +
     "🌅 PRE-OPEN  — Before 8:30 CST\n" +
@@ -104,25 +188,35 @@ function addBearTrapHeaderNotes(sheet) {
 
   sheet.getRange(h, BTC.FLUSH_DEPTH).setNote(
     "📉 FLUSH DEPTH\n─────────────────────\n" +
-    "How far SPY has dropped from the Day Open (%).\n\n" +
-    "  < 0.20% → too shallow, not qualifying\n" +
+    "How far SPY has dropped from its POST-OPEN LOCAL HIGH (%).\n\n" +
+    "⚠️ NOT measured from day open — measured from the highest\n" +
+    "price reached after 8:30 CST. This handles the common case\n" +
+    "where SPY chops up for 10-15 min before the flush begins.\n\n" +
+    "Example: Open $585.00 → chop to $585.80 → flush to $584.30\n" +
+    "  Old system saw: −0.12% (too shallow, ignored ❌)\n" +
+    "  New system sees: −0.26% from $585.80 (qualifying flush ✅)\n\n" +
+    "Thresholds:\n" +
+    "  < 0.20% → not qualifying\n" +
     "  0.20–0.40% → moderate Bear Trap flush\n" +
     "  > 0.40% → strong flush, higher conviction\n\n" +
-    "Negative = below open. Positive = recovering."
+    "Local high locks in once the flush begins — price recovering\n" +
+    "does not reset the anchor."
   );
 
   sheet.getRange(h, BTC.FLUSH_SPEED).setNote(
     "⚡ FLUSH SPEED\n─────────────────────\n" +
     "How fast the flush happened, measured as % drop per 5-min bar.\n\n" +
-    "⚡ FAST   ≥0.15%/bar — Panic selling, not real distribution.\n" +
-    "              Retail stops being hit. Institutions not involved.\n" +
-    "              STRONGEST Bear Trap signal. +10% confidence.\n\n" +
+    "⚠️ Timing starts when the flush BEGINS (from the local high),\n" +
+    "NOT from the 8:30 CST open. A 15-min pre-flush chop does not\n" +
+    "dilute this reading.\n\n" +
+    "⚡ FAST   ≥0.15%/bar — Panic selling, retail stops hit.\n" +
+    "              Institutions not involved. Strongest trap signal.\n" +
+    "              +10% confidence.\n\n" +
     "📊 MODERATE  0.05–0.15%/bar — Normal flush, watch carefully.\n\n" +
-    "🐌 SLOW   <0.05%/bar — Grinding, could be real selling.\n" +
-    "              Bears have more control. Be cautious.\n\n" +
-    "WHY IT MATTERS:\n" +
+    "🐌 SLOW   <0.05%/bar — Grinding lower. Could be real selling.\n" +
+    "              Be cautious, reduce position size.\n\n" +
     "Bear Traps flush HARD and FAST then stop abruptly.\n" +
-    "Real distribution grinds lower with sustained pressure."
+    "Real distribution grinds with sustained pressure."
   );
 
   sheet.getRange(h, BTC.VOL_SIGNAL).setNote(
@@ -241,14 +335,15 @@ function setupBearTrapSheetFromMenu() {
   var ss    = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = setupBearTrapSheet(ss);
   SpreadsheetApp.getUi().alert(
-    "🪤 BEAR TRAP OPEN\n\n" +
-    "✅ Sheet ready!\n\n" +
-    "NEW in this version:\n" +
+    "🪤 Bear Trap Open\n\n" +
+    "✅ Sheet created and styled!\n\n" +
+    "What's included:\n" +
+    "• 🚨 Trap Alert — plain-English signal, loudest column\n" +
     "• 😨 VIX regime check (NORMAL = +10% confidence)\n" +
     "• 📡 ES Futures trend (FADING = +15% confidence)\n" +
     "• ⚡ Flush speed scoring (FAST = +10% confidence)\n" +
-    "• 🤖 AI only fires on phase changes (saves quota)\n\n" +
-    "Active: 8:30–9:15 CST  |  EOD brief: 3:00 CST\n" +
+    "• 🤖 AI memos fire only on phase changes (saves quota)\n\n" +
+    "Active: 8:30–9:15 CST  ·  EOD brief: 3:00 CST\n" +
     "Runs inside your existing 5-minute trigger."
   );
 }

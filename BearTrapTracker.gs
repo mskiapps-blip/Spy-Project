@@ -98,22 +98,24 @@ var BT = {
 var BTC = {
   TIME:           1,  // A
   PRICE:          2,  // B
-  PHASE:          3,  // C
-  FLUSH_DEPTH:    4,  // D
-  FLUSH_SPEED:    5,  // E — NEW: fast/slow/grinding
-  VOL_SIGNAL:     6,  // F
-  VIX:            7,  // G — NEW: VIX level + regime
-  ES_TREND:       8,  // H — NEW: ES futures trend
-  CONFIDENCE:     9,  // I
-  ENTRY_SIGNAL:   10, // J
-  TARGET_PRICE:   11, // K
-  OVERNIGHT:      12, // L
-  AI_MEMO:        13  // M
+  TRAP_ALERT:     3,  // C — ← NEW: plain-English status, loudest column
+  PHASE:          4,  // D
+  FLUSH_DEPTH:    5,  // E
+  FLUSH_SPEED:    6,  // F
+  VOL_SIGNAL:     7,  // G
+  VIX:            8,  // H
+  ES_TREND:       9,  // I
+  CONFIDENCE:     10, // J
+  ENTRY_SIGNAL:   11, // K
+  TARGET_PRICE:   12, // L
+  OVERNIGHT:      13, // M
+  AI_MEMO:        14  // N
 };
 
 var BT_HEADERS = [
   "⏱ TIME (CST)",
   "💰 SPY PRICE",
+  "🚨 TRAP ALERT",
   "📍 PHASE",
   "📉 FLUSH DEPTH",
   "⚡ FLUSH SPEED",
@@ -233,6 +235,7 @@ function runBearTrapTick(data, now) {
     var row = [
       timeStr,
       data.price,
+      metrics.trapAlert || "—",
       metrics.phase,
       flushStr,
       flushSpeedStr,
@@ -338,18 +341,59 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   if (dayOpen === 0) {
     dayOpen = price;
     setFlag("BT_DAY_OPEN", dayOpen);
-    setFlag("BT_OPEN_TIME_MIN", (cst.getHours() * 60 + cst.getMinutes()).toString());
   }
 
-  // Session high/low tracking
+  // ── Session high/low tracking ─────────────────────────────
   var sessionHigh = parseFloat(getFlag("BT_SESSION_HIGH")) || price;
   var sessionLow  = parseFloat(getFlag("BT_SESSION_LOW"))  || price;
   if (price > sessionHigh) { sessionHigh = price; setFlag("BT_SESSION_HIGH", sessionHigh); }
   if (price < sessionLow || sessionLow === 0) { sessionLow = price; setFlag("BT_SESSION_LOW", sessionLow); }
 
-  // ── Flush depth ───────────────────────────────────────────
-  var flushDepthPct = dayOpen > 0 ? Math.round(((price - dayOpen) / dayOpen) * 10000) / 100 : 0;
-  var maxFlushPct   = parseFloat(getFlag("BT_MAX_FLUSH_PCT")) || 0;
+  // ── POST-OPEN LOCAL HIGH ──────────────────────────────────
+  // Track the highest price reached after the open — this is the
+  // real flush anchor. SPY sometimes chops up for 10-15 min before
+  // the flush begins. Measuring from day open would miss that entirely.
+  //
+  // Rules:
+  //   • Starts at day open price on first tick.
+  //   • Keeps climbing as long as price makes new highs.
+  //   • LOCKS IN once a qualifying flush begins (price drops
+  //     ≥ FLUSH_MIN_PCT from the local high) — so we don't let
+  //     a recovering price reset the anchor mid-flush.
+  //   • Flush depth and speed are measured from this locked high,
+  //     not from the day open.
+  var localHigh       = parseFloat(getFlag("BT_LOCAL_HIGH"))        || dayOpen;
+  var localHighLocked = getFlag("BT_LOCAL_HIGH_LOCKED") === "YES";
+  var flushStartMin   = parseInt(getFlag("BT_FLUSH_START_MIN") || "0");
+
+  if (!localHighLocked) {
+    // Still in the pre-flush window — update local high if price is rising
+    if (price > localHigh) {
+      localHigh = price;
+      setFlag("BT_LOCAL_HIGH", localHigh);
+      // Record the time of this new local high (flush speed measured from here)
+      setFlag("BT_LOCAL_HIGH_MIN", (cst.getHours() * 60 + cst.getMinutes()).toString());
+    }
+    // Check if a qualifying flush has now begun from the local high
+    var dropFromLocalHigh = localHigh > 0 ? ((price - localHigh) / localHigh) * 100 : 0;
+    if (dropFromLocalHigh <= -BT.FLUSH_MIN_PCT) {
+      // Lock the local high — this is the flush anchor
+      localHighLocked = true;
+      setFlag("BT_LOCAL_HIGH_LOCKED", "YES");
+      flushStartMin = parseInt(getFlag("BT_LOCAL_HIGH_MIN") || "0");
+      setFlag("BT_FLUSH_START_MIN", flushStartMin.toString());
+      Logger.log("BT: Local high locked at $" + localHigh.toFixed(2) +
+                 " flush started at min " + flushStartMin);
+    }
+  }
+
+  // ── Flush depth — measured from local high, not day open ──
+  // This correctly captures a delayed flush that starts 10-15 min in.
+  var flushAnchor   = localHigh > 0 ? localHigh : dayOpen;
+  var flushDepthPct = flushAnchor > 0
+    ? Math.round(((price - flushAnchor) / flushAnchor) * 10000) / 100
+    : 0;
+  var maxFlushPct = parseFloat(getFlag("BT_MAX_FLUSH_PCT")) || 0;
 
   if (flushDepthPct < maxFlushPct) {
     maxFlushPct = flushDepthPct;
@@ -358,12 +402,13 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
     flushLow = price;
   }
 
-  // ── Flush speed ───────────────────────────────────────────
-  // Track how fast the flush happened: % drop per bar elapsed since open
-  var openTimeMins = parseInt(getFlag("BT_OPEN_TIME_MIN") || "0");
-  var nowMins      = cst.getHours() * 60 + cst.getMinutes();
-  var barsElapsed  = Math.max(1, Math.round((nowMins - openTimeMins) / 5));
-  var flushPctPerBar = barsElapsed > 0 ? Math.abs(maxFlushPct) / barsElapsed : 0;
+  // ── Flush speed — measured from when flush actually started ──
+  // Uses BT_FLUSH_START_MIN (time of local high) rather than open time.
+  // A 15-min pre-flush chop no longer dilutes the speed reading.
+  var nowMins        = cst.getHours() * 60 + cst.getMinutes();
+  var flushRefMin    = flushStartMin > 0 ? flushStartMin : parseInt(getFlag("BT_LOCAL_HIGH_MIN") || "0");
+  var barsInFlush    = Math.max(1, Math.round((nowMins - flushRefMin) / 5));
+  var flushPctPerBar = barsInFlush > 0 ? Math.abs(maxFlushPct) / barsInFlush : 0;
 
   var flushSpeedStr;
   var flushFast = false;
@@ -398,7 +443,7 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   var flushExists = Math.abs(maxFlushPct) >= BT.FLUSH_MIN_PCT;
   var flushStrong = Math.abs(maxFlushPct) >= BT.FLUSH_STRONG_PCT;
 
-  if (!flipDetected && flushExists && tickPct >= BT.MOMENTUM_FLIP_PCT && price < dayOpen) {
+  if (!flipDetected && flushExists && tickPct >= BT.MOMENTUM_FLIP_PCT && price < flushAnchor) {
     flipDetected = true;
     setFlag("BT_FLIP_DETECTED", "YES");
     setFlag("BT_FLIP_PRICE", price.toString());
@@ -471,23 +516,37 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   // ── Entry signal + target ─────────────────────────────────
   var entrySignal = "⏳ WAIT";
   var targetPrice = null;
+  var trapAlert   = "";   // ← plain-English one-liner, loudest signal
 
   if (score >= 75 && flipDetected && !ripDetected) {
     targetPrice = flushLow > 0
       ? Math.round(flushLow * (1 + BT.CALL_CONFIRM_PCT / 100) * 100) / 100
       : Math.round(price * 1.001 * 100) / 100;
     entrySignal = "✅ BUY CALLS";
+    trapAlert   = "✅ ENTER CALLS — Cross $" + targetPrice.toFixed(2);
   } else if (score >= 60 && flipDetected) {
     targetPrice = flushLow > 0
       ? Math.round(flushLow * (1 + BT.CALL_CONFIRM_PCT / 100) * 100) / 100
       : null;
     entrySignal = "👀 WATCH — Flip @ $" + (targetPrice ? targetPrice.toFixed(2) : "?");
+    trapAlert   = "⚡ FLIP DETECTED — Watch $" + (targetPrice ? targetPrice.toFixed(2) : "?");
+  } else if (ripDetected) {
+    trapAlert   = "🚀 RIP CONFIRMED — Manage position";
+    entrySignal = "🚀 RIP IN PROGRESS";
+  } else if (score >= 50 && flushExists && phase === PHASE.STALL) {
+    entrySignal = "🟡 PATTERN FORMING (" + score + "%)";
+    trapAlert   = "⚠️ STALL — DO NOT BUY PUTS — Wait for flip";
   } else if (score >= 50 && flushExists) {
     entrySignal = "🟡 PATTERN FORMING (" + score + "%)";
-  } else if (ripDetected && !flipDetected) {
-    entrySignal = "⚠️ MISSED — Rip without clean flip";
+    trapAlert   = "🚨 DO NOT BUY PUTS — Bear Trap " + score + "% confidence";
+  } else if (score >= 35 && flushExists) {
+    entrySignal = "👁 WATCHING (" + score + "%)";
+    trapAlert   = "⚠️ POSSIBLE TRAP — Avoid puts for now";
   } else if (score < 25 && flushExists) {
     entrySignal = "❌ NOT TODAY";
+    trapAlert   = "—";
+  } else if (!flushExists) {
+    trapAlert   = "—";
   }
 
   // Persist for EOD grading
@@ -507,6 +566,7 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
     volPct:        volPct,
     confidence:    score,
     entrySignal:   entrySignal,
+    trapAlert:     trapAlert,
     targetPrice:   targetPrice,
     overnightStr:  overnightStr,
     flushExists:   flushExists,
@@ -845,119 +905,189 @@ function getEODAIMemo(ctx) {
 
 // ─────────────────────────────────────────────────────────────
 // FORMAT ONE DATA ROW
+// Fonts: Georgia (banner) · Trebuchet MS (headers) · Arial (data)
+//        Roboto Mono (prices/numbers) · Arial Black (alert cell)
 // ─────────────────────────────────────────────────────────────
 function applyBearTrapRowFormat(sheet, rowNum, metrics, vixData, esData) {
   try {
-    sheet.setRowHeight(rowNum, 24);
+    sheet.setRowHeight(rowNum, 26);
 
+    // ── ROW-LEVEL BACKGROUND ──────────────────────────────────
+    var rowBg = (rowNum % 2 === 0) ? BT_COLOR.BG_ROW_ALT : BT_COLOR.BG_ROW;
+
+    if (metrics.trapAlert.indexOf("DO NOT BUY PUTS") !== -1 ||
+        metrics.trapAlert.indexOf("POSSIBLE TRAP")   !== -1) {
+      rowBg = BT_COLOR.BG_DANGER;
+    } else if (metrics.trapAlert.indexOf("STALL") !== -1) {
+      rowBg = BT_COLOR.BG_CAUTION;
+    } else if (metrics.trapAlert.indexOf("FLIP DETECTED") !== -1) {
+      rowBg = BT_COLOR.BG_READY;
+    } else if (metrics.trapAlert.indexOf("ENTER CALLS")   !== -1 ||
+               metrics.trapAlert.indexOf("RIP CONFIRMED") !== -1) {
+      rowBg = BT_COLOR.BG_GO;
+    }
+
+    // Base: Arial, clean, easy to scan at a glance
     sheet.getRange(rowNum, 1, 1, BT_HEADERS.length)
-      .setBackground("#0d0d2b")
-      .setFontColor("#c0c0e0")
-      .setFontFamily("Courier New")
+      .setBackground(rowBg)
+      .setFontColor(BT_COLOR.TEXT_BASE)
+      .setFontFamily(BT_FONT.DATA)
       .setFontSize(9)
-      .setVerticalAlignment("middle");
+      .setVerticalAlignment("middle")
+      .setFontWeight("normal");
 
-    // TIME
+    // ── TIME ──────────────────────────────────────────────────
     sheet.getRange(rowNum, BTC.TIME)
-      .setFontColor("#9090cc").setHorizontalAlignment("center");
-
-    // PRICE
-    sheet.getRange(rowNum, BTC.PRICE)
-      .setNumberFormat("$#,##0.00")
-      .setFontColor("#00e5ff").setFontWeight("bold")
+      .setFontColor(BT_COLOR.TEXT_DIM)
       .setHorizontalAlignment("center");
 
-    // PHASE
-    var phaseCell = sheet.getRange(rowNum, BTC.PHASE);
-    phaseCell.setHorizontalAlignment("center").setFontWeight("bold");
-    var phaseColor = metrics.phase === PHASE.FLUSH ? "#ff6b6b"
-                   : metrics.phase === PHASE.STALL ? "#ffd600"
-                   : metrics.phase === PHASE.FLIP  ? "#00ff99"
-                   : metrics.phase === PHASE.RIP   ? "#00ff99"
-                   : "#9090cc";
-    phaseCell.setFontColor(phaseColor);
-    if (metrics.phase === PHASE.RIP) phaseCell.setFontSize(10);
+    // ── PRICE — monospace for clean number alignment ──────────
+    sheet.getRange(rowNum, BTC.PRICE)
+      .setNumberFormat("$#,##0.00")
+      .setFontFamily(BT_FONT.MONO)
+      .setFontColor(BT_COLOR.TEXT_PRICE)
+      .setFontWeight("bold")
+      .setFontSize(10)
+      .setHorizontalAlignment("center");
 
-    // FLUSH DEPTH
-    var flushCell = sheet.getRange(rowNum, BTC.FLUSH_DEPTH);
-    flushCell.setHorizontalAlignment("center");
-    flushCell.setFontColor(
-      metrics.flushDepthPct < -BT.FLUSH_MIN_PCT ? "#ff6b6b" :
-      metrics.flushDepthPct > 0.1               ? "#00ff99" : "#9090cc"
-    );
+    // ── TRAP ALERT — maximum visual weight ────────────────────
+    var alertCell = sheet.getRange(rowNum, BTC.TRAP_ALERT);
+    alertCell
+      .setFontFamily(BT_FONT.ALERT)
+      .setFontWeight("bold")
+      .setFontSize(9)
+      .setHorizontalAlignment("center")
+      .setWrap(false);
 
-    // FLUSH SPEED
-    var speedCell = sheet.getRange(rowNum, BTC.FLUSH_SPEED);
-    speedCell.setHorizontalAlignment("center");
-    speedCell.setFontColor(metrics.flushFast ? "#ffd600" : "#9090cc");
+    if (metrics.trapAlert.indexOf("DO NOT BUY PUTS") !== -1) {
+      alertCell.setBackground("#d32f2f").setFontColor("#ffffff").setFontSize(10);
+    } else if (metrics.trapAlert.indexOf("POSSIBLE TRAP") !== -1) {
+      alertCell.setBackground("#bf360c").setFontColor("#ffe0b2");
+    } else if (metrics.trapAlert.indexOf("STALL") !== -1) {
+      alertCell.setBackground("#e65100").setFontColor("#fff8e1");
+    } else if (metrics.trapAlert.indexOf("FLIP DETECTED") !== -1) {
+      alertCell.setBackground("#1b5e20").setFontColor("#f1f8e9").setFontSize(10);
+    } else if (metrics.trapAlert.indexOf("ENTER CALLS") !== -1) {
+      alertCell.setBackground("#2e7d32").setFontColor("#ffffff").setFontSize(10);
+    } else if (metrics.trapAlert.indexOf("RIP CONFIRMED") !== -1) {
+      alertCell.setBackground("#1b5e20").setFontColor(BT_COLOR.TEXT_GREEN).setFontSize(10);
+    } else {
+      alertCell.setFontColor(BT_COLOR.TEXT_DIM).setFontFamily(BT_FONT.DATA);
+    }
 
-    // VOL SIGNAL
-    var volCell = sheet.getRange(rowNum, BTC.VOL_SIGNAL);
-    volCell.setHorizontalAlignment("center");
-    volCell.setFontColor(
-      (metrics.volPct > 0 && metrics.volPct < BT.VOLUME_WEAK_PCT) ? "#ffd600" :
-      metrics.volPct >= 100 ? "#ff6b6b" : "#9090cc"
-    );
+    // ── PHASE ─────────────────────────────────────────────────
+    sheet.getRange(rowNum, BTC.PHASE)
+      .setHorizontalAlignment("center")
+      .setFontWeight("bold")
+      .setFontSize(9)
+      .setFontColor(
+        metrics.phase === PHASE.FLUSH ? BT_COLOR.TEXT_RED  :
+        metrics.phase === PHASE.STALL ? BT_COLOR.TEXT_GOLD :
+        metrics.phase === PHASE.FLIP  ? BT_COLOR.TEXT_GREEN :
+        metrics.phase === PHASE.RIP   ? BT_COLOR.TEXT_GREEN :
+        BT_COLOR.TEXT_DIM
+      );
 
-    // VIX — color by regime
+    // ── FLUSH DEPTH — mono for number alignment ───────────────
+    sheet.getRange(rowNum, BTC.FLUSH_DEPTH)
+      .setHorizontalAlignment("center")
+      .setFontFamily(BT_FONT.MONO)
+      .setFontSize(9)
+      .setFontColor(
+        metrics.flushDepthPct < -BT.FLUSH_MIN_PCT ? BT_COLOR.TEXT_RED  :
+        metrics.flushDepthPct > 0.1               ? BT_COLOR.TEXT_GREEN :
+        BT_COLOR.TEXT_DIM
+      );
+
+    // ── FLUSH SPEED ───────────────────────────────────────────
+    sheet.getRange(rowNum, BTC.FLUSH_SPEED)
+      .setHorizontalAlignment("center")
+      .setFontSize(9)
+      .setFontColor(metrics.flushFast ? BT_COLOR.TEXT_GOLD : BT_COLOR.TEXT_DIM);
+
+    // ── VOL SIGNAL ────────────────────────────────────────────
+    sheet.getRange(rowNum, BTC.VOL_SIGNAL)
+      .setHorizontalAlignment("center")
+      .setFontSize(9)
+      .setFontColor(
+        (metrics.volPct > 0 && metrics.volPct < BT.VOLUME_WEAK_PCT) ? BT_COLOR.TEXT_GOLD :
+        metrics.volPct >= 100 ? BT_COLOR.TEXT_RED : BT_COLOR.TEXT_DIM
+      );
+
+    // ── VIX — mono, bold ──────────────────────────────────────
     var vixCell = sheet.getRange(rowNum, BTC.VIX);
-    vixCell.setHorizontalAlignment("center").setFontWeight("bold");
-    if (vixData) {
-      vixCell.setFontColor(
-        vixData.regime === "LOW"      ? "#00ff99" :
-        vixData.regime === "NORMAL"   ? "#aaffaa" :
-        vixData.regime === "ELEVATED" ? "#ffd600" : "#ff6b6b"
-      );
-    }
+    vixCell.setHorizontalAlignment("center").setFontFamily(BT_FONT.MONO)
+           .setFontWeight("bold").setFontSize(9);
+    vixCell.setFontColor(
+      !vixData                        ? BT_COLOR.TEXT_DIM  :
+      vixData.regime === "LOW"        ? BT_COLOR.TEXT_GREEN :
+      vixData.regime === "NORMAL"     ? "#a5d6a7"          :
+      vixData.regime === "ELEVATED"   ? BT_COLOR.TEXT_GOLD :
+      BT_COLOR.TEXT_RED
+    );
 
-    // ES FUTURES — color by trend
+    // ── ES FUTURES ────────────────────────────────────────────
     var esCell = sheet.getRange(rowNum, BTC.ES_TREND);
-    esCell.setHorizontalAlignment("center").setFontWeight("bold");
-    if (esData) {
-      esCell.setFontColor(
-        esData.trend === "FADING"   ? "#00ff99" :  // fading = trap setup = good
-        esData.trend === "CLIMBING" ? "#ff6b6b" :  // climbing = flush may continue
-        "#ffd600"                                   // flat = neutral
-      );
-    }
+    esCell.setHorizontalAlignment("center").setFontWeight("bold").setFontSize(9);
+    esCell.setFontColor(
+      !esData                      ? BT_COLOR.TEXT_DIM   :
+      esData.trend === "FADING"   ? BT_COLOR.TEXT_GREEN :
+      esData.trend === "CLIMBING" ? BT_COLOR.TEXT_RED   :
+      BT_COLOR.TEXT_GOLD
+    );
 
-    // CONFIDENCE
-    var conf      = metrics.confidence;
-    var confColor = conf >= 75 ? "#00ff99"
-                  : conf >= 50 ? "#ffd600"
-                  : conf >= 30 ? "#ff9944"
-                  : "#ff6b6b";
+    // ── CONFIDENCE — mono, big, can't miss ───────────────────
+    var conf = metrics.confidence;
     sheet.getRange(rowNum, BTC.CONFIDENCE)
       .setHorizontalAlignment("center")
-      .setFontColor(confColor).setFontWeight("bold").setFontSize(10);
+      .setFontFamily(BT_FONT.MONO)
+      .setFontWeight("bold")
+      .setFontSize(10)
+      .setFontColor(
+        conf >= 75 ? BT_COLOR.TEXT_GREEN :
+        conf >= 50 ? BT_COLOR.TEXT_GOLD  :
+        conf >= 30 ? "#ff8a65"           :
+        BT_COLOR.TEXT_RED
+      );
 
-    // ENTRY SIGNAL
+    // ── ENTRY SIGNAL ──────────────────────────────────────────
     var entryCell = sheet.getRange(rowNum, BTC.ENTRY_SIGNAL);
-    entryCell.setHorizontalAlignment("center");
+    entryCell.setHorizontalAlignment("center").setFontSize(9);
     if (metrics.entrySignal.indexOf("BUY CALLS") !== -1) {
-      entryCell.setBackground("#003300").setFontColor("#00ff99")
+      entryCell.setBackground("#1b5e20").setFontColor("#ffffff")
                .setFontWeight("bold").setFontSize(10);
-    } else if (metrics.entrySignal.indexOf("WATCH") !== -1) {
-      entryCell.setFontColor("#ffd600").setFontWeight("bold");
-    } else if (metrics.entrySignal.indexOf("MISSED") !== -1) {
-      entryCell.setFontColor("#ff6b6b");
+    } else if (metrics.entrySignal.indexOf("WATCH") !== -1 ||
+               metrics.entrySignal.indexOf("FLIP")  !== -1) {
+      entryCell.setFontColor(BT_COLOR.TEXT_GOLD).setFontWeight("bold");
+    } else if (metrics.entrySignal.indexOf("RIP") !== -1) {
+      entryCell.setFontColor(BT_COLOR.TEXT_GREEN).setFontWeight("bold");
     } else if (metrics.entrySignal.indexOf("NOT TODAY") !== -1) {
-      entryCell.setFontColor("#555577");
+      entryCell.setFontColor(BT_COLOR.TEXT_DIM);
     } else {
-      entryCell.setFontColor("#9090cc");
+      entryCell.setFontColor("#7a7a9a");
     }
 
-    // TARGET PRICE
+    // ── TARGET PRICE — mono gold ──────────────────────────────
     sheet.getRange(rowNum, BTC.TARGET_PRICE)
-      .setFontColor("#ffd600").setHorizontalAlignment("center").setFontWeight("bold");
+      .setFontFamily(BT_FONT.MONO)
+      .setFontColor(BT_COLOR.TEXT_GOLD)
+      .setFontWeight("bold")
+      .setFontSize(9)
+      .setHorizontalAlignment("center");
 
-    // OVERNIGHT
+    // ── OVERNIGHT — small, dimmed ─────────────────────────────
     sheet.getRange(rowNum, BTC.OVERNIGHT)
-      .setFontColor("#8888bb").setFontSize(8).setHorizontalAlignment("left");
+      .setFontColor("#5a5a7a")
+      .setFontSize(8)
+      .setHorizontalAlignment("left");
 
-    // AI MEMO
+    // ── AI MEMO — italic, subtle ──────────────────────────────
     sheet.getRange(rowNum, BTC.AI_MEMO)
-      .setFontColor("#aaaacc").setFontSize(8).setWrap(true).setHorizontalAlignment("left");
+      .setFontColor("#7a7a9a")
+      .setFontSize(8)
+      .setFontStyle("italic")
+      .setWrap(true)
+      .setHorizontalAlignment("left");
 
   } catch (e) {
     Logger.log("applyBearTrapRowFormat ERROR: " + e.message);
@@ -984,6 +1114,8 @@ function resetDailyBearTrapFlags() {
     "BT_OVERNIGHT_TAGGED", "BT_LAST_CONFIDENCE", "BT_LAST_PHASE",
     "BT_SIGNAL_ISSUED", "BT_SIGNAL_PRICE", "BT_RECENT_TICKS",
     "BT_PREOPEN_WRITTEN", "BT_OPEN_TIME_MIN",
+    "BT_LOCAL_HIGH", "BT_LOCAL_HIGH_MIN", "BT_LOCAL_HIGH_LOCKED",
+    "BT_FLUSH_START_MIN",
     "BT_LAST_AI_PHASE", "BT_LAST_AI_CONF_BAND", "BT_LAST_AI_SIGNAL",
     "BT_AI_CALL_COUNT"
   ];
