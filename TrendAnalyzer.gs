@@ -22,32 +22,41 @@
 // TREND SETTINGS — adjust these to tune sensitivity
 // ─────────────────────────────────────────────────────────────
 var TREND_SETTINGS = {
-  EMA_FAST_PERIOD:  9,      // Fast EMA period (bars)
-  EMA_SLOW_PERIOD:  21,     // Slow EMA period (bars)
-  HISTORY_BARS:     30,     // Max bars to store in CONFIG
-  ROUND_NUMBER_STEP: 5,     // SPY round levels (every $5, e.g. 520, 525)
-  NEAR_ZONE_PCT:    0.15,   // How close (%) to count as "near" S/R
-  MOMENTUM_BARS:    5       // Bars to look back for momentum reading
+  EMA_FAST_PERIOD:   9,     // Fast EMA period (bars)
+  EMA_SLOW_PERIOD:   21,    // Slow EMA period (bars)
+  HISTORY_BARS:      30,    // Max bars to store in CONFIG
+  ROUND_NUMBER_STEP: 5,     // SPY round levels every $5 (e.g. 750, 755)
+  NEAR_ZONE_PCT:     0.20,  // Within 0.20% = "near" a support/resistance zone
+  MOMENTUM_BARS:     5      // Bars to look back for momentum label
 };
 
 // ─────────────────────────────────────────────────────────────
 // MAIN: Analyze trend and return a one-line status string.
-// data:        SPY data object from DataFetcher
-// prevClose:   Yesterday's close price
+// data:         SPY data object from DataFetcher
+// prevClose:    Yesterday's close price
 // dayOpenPrice: Today's open price
 // ─────────────────────────────────────────────────────────────
 function analyzeTrend(data, prevClose, dayOpenPrice) {
   try {
-    // ── 1. Update stored price history ───────────────────────
-    var history = updatePriceHistory(data.price);
+    // Validate incoming data before doing anything
+    if (!data || !data.price || data.price <= 0) {
+      return "⚠️ No price data";
+    }
 
-    // ── 2. Compute EMAs if we have enough bars ───────────────
+    // ── 1. Update price history (filters NaN automatically) ──
+    var history = updatePriceHistory(data.price);
+    Logger.log("TREND: history length=" + history.length + " price=" + data.price);
+
+    // ── 2. Compute EMAs ───────────────────────────────────────
     var fastEMA = computeEMA(history, TREND_SETTINGS.EMA_FAST_PERIOD);
     var slowEMA = computeEMA(history, TREND_SETTINGS.EMA_SLOW_PERIOD);
+    Logger.log("TREND: fastEMA=" + fastEMA + " slowEMA=" + slowEMA);
 
-    // ── 3. Determine trend direction ─────────────────────────
+    // ── 3. Determine trend direction ──────────────────────────
     var direction = "⚖️ NEUTRAL";
-    if (fastEMA && slowEMA) {
+
+    if (fastEMA !== null && slowEMA !== null) {
+      // We have enough bars for both EMAs
       if (fastEMA > slowEMA * 1.0003) {
         direction = "📈 UPTREND";
       } else if (fastEMA < slowEMA * 0.9997) {
@@ -55,19 +64,26 @@ function analyzeTrend(data, prevClose, dayOpenPrice) {
       } else {
         direction = "⚖️ CONSOLIDATING";
       }
+    } else if (fastEMA !== null) {
+      // Have fast EMA but not slow yet — use vs day open
+      direction = data.price > (dayOpenPrice || data.price)
+        ? "📈 ABOVE OPEN" : "📉 BELOW OPEN";
     } else if (history.length >= 3) {
-      // Simple: is price above or below the day open?
-      direction = data.price > dayOpenPrice ? "📈 ABOVE OPEN" : "📉 BELOW OPEN";
+      // Not enough bars for any EMA yet — simple open comparison
+      direction = data.price > (dayOpenPrice || data.price)
+        ? "📈 ABOVE OPEN" : "📉 BELOW OPEN";
+    } else {
+      direction = "⏳ GATHERING DATA (" + history.length + " bars)";
     }
 
-    // ── 4. Find S/R zones ────────────────────────────────────
+    // ── 4. Find nearest S/R zone ──────────────────────────────
     var zones    = getSupportResistanceZones(data, prevClose, dayOpenPrice);
     var nearZone = findNearestZone(data.price, zones);
 
-    // ── 5. Momentum tag ──────────────────────────────────────
+    // ── 5. Momentum tag ───────────────────────────────────────
     var momentumStr = getMomentumTag(history);
 
-    // ── 6. Build output string ───────────────────────────────
+    // ── 6. Assemble output ────────────────────────────────────
     var parts = [direction];
     if (nearZone)    parts.push(nearZone);
     if (momentumStr) parts.push(momentumStr);
@@ -75,46 +91,49 @@ function analyzeTrend(data, prevClose, dayOpenPrice) {
     return parts.join(" │ ");
 
   } catch (e) {
-    Logger.log("analyzeTrend ERROR: " + e.toString());
-    return "⚠️ Trend unavailable";
+    Logger.log("analyzeTrend ERROR: " + e.message + "\nStack: " + e.stack);
+    return "⚠️ Trend error: " + e.message;
   }
 }
 
 // ─────────────────────────────────────────────────────────────
 // SUPPORT / RESISTANCE ZONES
-// Returns an array of { label, price, type } objects.
-// Type: "support" or "resistance"
+// Returns array of { label, price, type } objects.
+// All prices are validated before pushing — skips any that
+// are 0, null, or NaN to avoid bad distance calculations.
 // ─────────────────────────────────────────────────────────────
 function getSupportResistanceZones(data, prevClose, dayOpen) {
   var zones = [];
   var price = data.price;
 
-  // ── Previous close ────────────────────────────────────────
-  zones.push({ label: "PrevClose",  price: prevClose,    type: price >= prevClose ? "support"    : "resistance" });
+  // Helper: only add zone if price value is a real number
+  function addZone(label, zonePrice, type) {
+    if (typeof zonePrice === "number" && !isNaN(zonePrice) && zonePrice > 0) {
+      zones.push({ label: label, price: zonePrice, type: type });
+    }
+  }
 
-  // ── Day open ──────────────────────────────────────────────
-  zones.push({ label: "DayOpen",    price: dayOpen,      type: price >= dayOpen   ? "support"    : "resistance" });
+  addZone("PrevClose", prevClose,    price >= prevClose ? "support" : "resistance");
+  addZone("DayOpen",   dayOpen,      price >= dayOpen   ? "support" : "resistance");
+  addZone("DayHigh",   data.dayHigh, "resistance");
+  addZone("DayLow",    data.dayLow,  "support");
 
-  // ── Day high / low ────────────────────────────────────────
-  zones.push({ label: "DayHigh",    price: data.dayHigh, type: "resistance" });
-  zones.push({ label: "DayLow",     price: data.dayLow,  type: "support" });
-
-  // ── Round number levels (every $5) ───────────────────────
+  // Round number levels (every $5)
   var step  = TREND_SETTINGS.ROUND_NUMBER_STEP;
   var lower = Math.floor(price / step) * step;
   var upper = lower + step;
-  zones.push({ label: "$" + lower + " round",  price: lower, type: "support" });
-  zones.push({ label: "$" + upper + " round",  price: upper, type: "resistance" });
+  addZone("$" + lower + " round", lower, "support");
+  addZone("$" + upper + " round", upper, "resistance");
 
   return zones;
 }
 
 // ─────────────────────────────────────────────────────────────
-// NEAREST ZONE: Find the closest S/R zone within threshold
+// NEAREST ZONE: Find closest S/R zone within NEAR_ZONE_PCT
 // ─────────────────────────────────────────────────────────────
 function findNearestZone(price, zones) {
-  var nearPct   = TREND_SETTINGS.NEAR_ZONE_PCT / 100;
-  var closest   = null;
+  var nearPct     = TREND_SETTINGS.NEAR_ZONE_PCT / 100;
+  var closest     = null;
   var closestDist = Infinity;
 
   for (var i = 0; i < zones.length; i++) {
@@ -136,61 +155,79 @@ function findNearestZone(price, zones) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// MOMENTUM TAG: Short-term direction based on last N bars
+// MOMENTUM TAG: Short-term direction from last N bars
 // ─────────────────────────────────────────────────────────────
 function getMomentumTag(history) {
   var n = TREND_SETTINGS.MOMENTUM_BARS;
-  if (history.length < n + 1) return null;
+  if (!history || history.length < n + 1) return null;
 
   var recent    = history.slice(-n);
   var oldest    = recent[0];
   var newest    = recent[recent.length - 1];
+
+  if (!oldest || oldest === 0) return null;
   var pctChange = ((newest - oldest) / oldest) * 100;
 
-  if (pctChange > 0.3)       return "⚡ ACCELERATING UP";
-  if (pctChange > 0.1)       return "↗️ GRINDING UP";
-  if (pctChange < -0.3)      return "💨 ACCELERATING DOWN";
-  if (pctChange < -0.1)      return "↘️ GRINDING DOWN";
+  if (pctChange > 0.3)  return "⚡ ACCELERATING UP";
+  if (pctChange > 0.1)  return "↗️ GRINDING UP";
+  if (pctChange < -0.3) return "💨 ACCELERATING DOWN";
+  if (pctChange < -0.1) return "↘️ GRINDING DOWN";
   return "➡️ FLAT";
 }
 
 // ─────────────────────────────────────────────────────────────
-// EMA CALCULATOR (Exponential Moving Average)
-// history: array of closing prices (oldest first)
-// period:  EMA period (e.g. 9, 21)
-// Returns: the EMA value or null if not enough data
+// EMA CALCULATOR
+// Returns EMA value, or null if not enough data.
 // ─────────────────────────────────────────────────────────────
 function computeEMA(history, period) {
-  if (history.length < period) return null;
+  if (!history || history.length < period) return null;
 
-  var k     = 2 / (period + 1); // smoothing factor
-  var slice = history.slice(-period * 2); // use up to 2x period for accuracy
+  var k     = 2 / (period + 1);
+  var slice = history.slice(-Math.min(period * 2, history.length));
 
-  // Seed with SMA of first `period` bars
+  // Seed: SMA of the first `period` values
   var ema = 0;
   for (var i = 0; i < period; i++) ema += slice[i];
   ema /= period;
 
-  // Apply EMA formula for remaining bars
+  // If the seed itself is NaN something got through — abort
+  if (isNaN(ema)) return null;
+
+  // Apply EMA for remaining bars
   for (var j = period; j < slice.length; j++) {
     ema = slice[j] * k + ema * (1 - k);
   }
 
-  return ema;
+  return isNaN(ema) ? null : ema;
 }
 
 // ─────────────────────────────────────────────────────────────
-// PRICE HISTORY STORE: Appends price and trims to max length.
-// Stored as a comma-separated string in CONFIG.
-// Returns array of numbers (oldest first).
+// PRICE HISTORY STORE
+// Stored as comma-separated string in CONFIG sheet.
+// Returns array of valid positive numbers (oldest first).
+//
+// WHY WE FILTER: A single NaN in the array silently corrupts
+// every EMA. This can creep in when CONFIG is cleared mid-
+// session, or when a blank row is appended. We always sanitize
+// the stored string on read so the EMA is always clean.
 // ─────────────────────────────────────────────────────────────
 function updatePriceHistory(price) {
-  var stored  = getFlag("PRICE_HISTORY") || "";
-  var arr     = stored ? stored.split(",").map(parseFloat) : [];
+  var stored = getFlag("PRICE_HISTORY") || "";
 
-  arr.push(price);
+  // Parse — discard anything that isn't a real positive number
+  var arr = [];
+  if (stored && stored.length > 0) {
+    arr = stored.split(",")
+      .map(parseFloat)
+      .filter(function(v) { return !isNaN(v) && isFinite(v) && v > 0; });
+  }
 
-  // Keep only the last HISTORY_BARS values
+  // Append current price if valid
+  if (typeof price === "number" && !isNaN(price) && price > 0) {
+    arr.push(price);
+  }
+
+  // Trim to max window
   if (arr.length > TREND_SETTINGS.HISTORY_BARS) {
     arr = arr.slice(-TREND_SETTINGS.HISTORY_BARS);
   }

@@ -183,36 +183,38 @@ function addVolumeHeaderNotes(sheet) {
     "The total number of SPY shares traded so far today,\n" +
     "accumulated from the open up to this 5-minute tick.\n\n" +
     "COLOR GUIDE:\n" +
-    "🟠 Orange → Volume is ABOVE the 30-day daily average.\n" +
-    "   Deeper orange = more extreme above-average activity.\n\n" +
-    "🔵 Blue → Volume is BELOW the 30-day daily average.\n" +
-    "   Deeper blue = unusually quiet / thin trading day.\n\n" +
-    "⚠️ Note: Early in the session (first 1-2 hours) volume\n" +
-    "   will naturally appear low vs the full-day average —\n" +
-    "   that's normal and doesn't mean today will be quiet."
+    "🟢 Green → Volume is ABOVE the 30-day daily average.\n" +
+    "   Deeper green = stronger-than-normal participation.\n" +
+    "   High volume gives price moves more conviction.\n\n" +
+    "🔴 Red → Volume is BELOW the 30-day daily average.\n" +
+    "   Deeper red = unusually thin / quiet session.\n" +
+    "   Low volume moves are easier to reverse.\n\n" +
+    "⚠️ Note: Early in the session (first 1-2 hours) this\n" +
+    "   column will read low vs the full-day average — that\n" +
+    "   is completely normal. Full-day avg resets at open."
   );
 
   // ── VOL vs 30D (column I) ──────────────────────────────────
   sheet.getRange(headerRow, COL.VOLUME_VS_AVG).setNote(
     "🔥 VOL vs 30D AVG\n" +
     "─────────────────────\n" +
-    "Today's cumulative volume expressed as a PERCENTAGE\n" +
-    "of the 30-day average daily volume.\n\n" +
+    "Today's cumulative volume as a PERCENTAGE of the\n" +
+    "30-day average daily volume.\n\n" +
     "HOW TO READ IT:\n" +
     "  100% = exactly on pace with the 30-day average\n" +
-    "  150% = 50% MORE volume than average (active day)\n" +
-    "   60% = 40% LESS volume than average (quiet day)\n\n" +
-    "COLOR matches the VOLUME TODAY column — both cells\n" +
-    "use the same gradient so you can read either one.\n\n" +
-    "WHAT HIGH VOLUME MEANS:\n" +
-    "  • Stronger conviction behind price moves\n" +
-    "  • More likely to follow through on breakouts\n" +
-    "  • Options and futures activity may be elevated\n\n" +
-    "WHAT LOW VOLUME MEANS:\n" +
-    "  • Moves may be less reliable / easier to reverse\n" +
-    "  • Can be normal on holidays or slow summer days\n\n" +
-    "SOURCE: 30-day avg is calculated fresh each tick\n" +
-    "from Yahoo Finance daily bars (free, no API key)."
+    "  150% = 50% MORE than average → active session\n" +
+    "   60% = 40% LESS than average → thin session\n\n" +
+    "COLOR uses the same green/red scale as price moves:\n" +
+    "  🟢 Green = above-average volume (conviction)\n" +
+    "  🔴 Red   = below-average volume (caution)\n" +
+    "  Both cells (H and I) share the same color so\n" +
+    "  you can glance at either one.\n\n" +
+    "WHY IT MATTERS:\n" +
+    "  • Big move on GREEN volume = more trustworthy\n" +
+    "  • Big move on RED volume = possible fake-out\n" +
+    "  • Watch for volume spikes near S/R zones\n\n" +
+    "SOURCE: 30-day avg fetched fresh from Yahoo Finance\n" +
+    "daily bars each tick (free, no API key required)."
   );
 
   Logger.log("Volume header notes added at row " + headerRow + ".");
