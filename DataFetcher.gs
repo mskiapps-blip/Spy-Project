@@ -70,7 +70,7 @@ function fetchSPYData() {
     volumes.forEach(function(v) { if (v != null) volumeToday += v; });
     if (volumeToday === 0) volumeToday = volume;
 
-    // ── 30-day average volume ─────────────────────────────────
+    // ── 30-day average volume (cached — barely moves intraday) ─
     var avgVol30 = fetch30DayAvgVolume();
 
     return {
@@ -92,9 +92,19 @@ function fetchSPYData() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Fetch 30-day daily bars → average daily volume
+// Fetch 30-day daily bars → average daily volume.
+// Cached for 6 hours via CacheService — the 30-day average does
+// not meaningfully change within a single trading session, so we
+// avoid a second Yahoo round-trip on every 5-minute tick.
 // ─────────────────────────────────────────────────────────────
 function fetch30DayAvgVolume() {
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get("AVG_VOL_30");
+  if (cached !== null) {
+    var c = parseInt(cached);
+    if (!isNaN(c)) return c;
+  }
+
   try {
     var url  = YAHOO_BASE + "?interval=1d&range=1mo";
     var resp = UrlFetchApp.fetch(url, {
@@ -116,36 +126,15 @@ function fetch30DayAvgVolume() {
     });
 
     var avg = count > 0 ? Math.round(total / count) : 0;
-    Logger.log("30d avg volume: " + avg);
+    Logger.log("30d avg volume (" + count + " bars): " + avg);
+
+    if (avg > 0) {
+      cache.put("AVG_VOL_30", String(avg), 21600); // cache 6 hours
+    }
     return avg;
 
   } catch (e) {
     Logger.log("fetch30DayAvgVolume ERROR: " + e.message);
     return 0;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// Get last N valid intraday closes (for trend EMA seeding)
-// ─────────────────────────────────────────────────────────────
-function fetchIntradayCloses(n) {
-  try {
-    var url  = YAHOO_BASE + "?interval=5m&range=1d";
-    var resp = UrlFetchApp.fetch(url, {
-      muteHttpExceptions: true,
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-    if (resp.getResponseCode() !== 200) return [];
-
-    var json   = JSON.parse(resp.getContentText());
-    var result = json.chart && json.chart.result && json.chart.result[0];
-    if (!result) return [];
-
-    var closes = result.indicators.quote[0].close || [];
-    var valid  = closes.filter(function(c) { return c != null; });
-    return valid.slice(-n);
-  } catch (e) {
-    Logger.log("fetchIntradayCloses ERROR: " + e.message);
-    return [];
   }
 }

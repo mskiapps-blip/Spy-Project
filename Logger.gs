@@ -40,13 +40,6 @@ var HEADERS = [
 ];
 
 // ─────────────────────────────────────────────────────────────
-// DATA START ROW — row 1 = banner, row 2 = headers, data from row 3
-// If you run without setupSheets, data starts from row 2 (no banner).
-// This constant is used so we never accidentally overwrite headers.
-// ─────────────────────────────────────────────────────────────
-var DATA_START_ROW = 3;   // Change to 2 if you skipped setupSheets
-
-// ─────────────────────────────────────────────────────────────
 // MAIN LOG FUNCTION — called every 5 minutes
 // ─────────────────────────────────────────────────────────────
 function logTick(data, now) {
@@ -67,8 +60,6 @@ function logTick(data, now) {
     var hr = log.getRange(1, 1, 1, HEADERS.length);
     hr.setBackground("#0d0d2b").setFontColor("#00e5ff").setFontWeight("bold").setFontSize(10);
     log.setFrozenRows(1);
-    // Adjust DATA_START_ROW for this simpler layout
-    DATA_START_ROW = 2;
   }
 
   // ── Retrieve stored state ────────────────────────────────
@@ -113,8 +104,15 @@ function logTick(data, now) {
     else                    tickVsAvg = "😴 QUIET ("   + ratio.toFixed(1) + "x)";
   }
 
-  // Volume vs 30-day average
-  var volPct    = (data.avgVol30 > 0) ? (data.volumeToday / data.avgVol30) * 100 : 0;
+  // Volume vs 30-day average, adjusted for time of day.
+  // We compare today's CUMULATIVE volume against the fraction of a
+  // full-day average that should have traded by now — so 100% means
+  // "on pace for an average day," not "already hit a full day's volume."
+  var dayFraction = getSessionFractionElapsed(now);
+  var expectedSoFar = (data.avgVol30 > 0 && dayFraction > 0)
+    ? data.avgVol30 * dayFraction
+    : 0;
+  var volPct    = (expectedSoFar > 0) ? (data.volumeToday / expectedSoFar) * 100 : 0;
   var volPctStr = (volPct > 0) ? volPct.toFixed(1) + "%" : "—";
 
   // Trend analysis
@@ -162,6 +160,29 @@ function logTick(data, now) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// SESSION FRACTION ELAPSED
+// Returns 0–1: how far through the 9:30–16:00 ET session we are.
+// Used to scale the 30-day full-day average down to a fair
+// "expected volume by now" benchmark for the VOLUME color.
+// Clamped to a small minimum so the very first tick doesn't divide
+// by ~0 and explode the percentage.
+// ─────────────────────────────────────────────────────────────
+function getSessionFractionElapsed(easternDate) {
+  var h = easternDate.getHours();
+  var m = easternDate.getMinutes();
+  var nowMins   = h * 60 + m;
+  var openMins  = MARKET_OPEN_HOUR  * 60 + MARKET_OPEN_MIN;   // 570
+  var closeMins = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MIN;  // 960
+  var sessionLen = closeMins - openMins;                      // 390 min
+
+  var elapsed = nowMins - openMins;
+  if (elapsed <= 0) return 0.02;          // pre/at open — tiny floor
+  if (elapsed >= sessionLen) return 1;    // at/after close
+  var frac = elapsed / sessionLen;
+  return Math.max(0.02, frac);            // never below 2% of the day
+}
+
+// ─────────────────────────────────────────────────────────────
 // ROLLING AVERAGE TICK SIZE (EMA, alpha=0.15)
 // ─────────────────────────────────────────────────────────────
 function updateRollingAvgTick(absTickChange) {
@@ -196,6 +217,9 @@ function finalizeDaySummary() {
      .setFontSize(9);
 
   setFlag("DAY_OPEN_PRICE", "");
+  setFlag("PREV_PRICE",     "");   // FIX #4: clear so first tick tomorrow
+                                   // shows a dash instead of computing a
+                                   // tick-delta against yesterday's close.
   setFlag("AVG_TICK_SIZE",  "");
   setFlag("TICK_COUNT",     "");
   setFlag("PRICE_HISTORY",  "");

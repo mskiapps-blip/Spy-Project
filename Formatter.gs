@@ -161,9 +161,9 @@ function applyColumnWidths(sheet) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// ADD VOLUME HEADER NOTES
-// Attaches a hover-comment to the two volume column headers
-// explaining exactly what each column means.
+// ADD VOLUME + TREND HEADER NOTES
+// Attaches hover-comments to the volume column headers and the
+// trend column header explaining exactly what each column means.
 // Call this once from setupSheets() — safe to re-run.
 // ─────────────────────────────────────────────────────────────
 function addVolumeHeaderNotes(sheet) {
@@ -183,41 +183,79 @@ function addVolumeHeaderNotes(sheet) {
     "The total number of SPY shares traded so far today,\n" +
     "accumulated from the open up to this 5-minute tick.\n\n" +
     "COLOR GUIDE:\n" +
-    "🟢 Green → Volume is ABOVE the 30-day daily average.\n" +
+    "Color compares today's volume against the PACE of an\n" +
+    "average day — i.e. how much should have traded by this\n" +
+    "time of session, not the full-day total. So 'on pace'\n" +
+    "reads neutral-to-green all day, even in the morning.\n\n" +
+    "🟢 Green → Volume is running ABOVE average pace.\n" +
     "   Deeper green = stronger-than-normal participation.\n" +
     "   High volume gives price moves more conviction.\n\n" +
-    "🔴 Red → Volume is BELOW the 30-day daily average.\n" +
+    "🔴 Red → Volume is running BELOW average pace.\n" +
     "   Deeper red = unusually thin / quiet session.\n" +
-    "   Low volume moves are easier to reverse.\n\n" +
-    "⚠️ Note: Early in the session (first 1-2 hours) this\n" +
-    "   column will read low vs the full-day average — that\n" +
-    "   is completely normal. Full-day avg resets at open."
+    "   Low volume moves are easier to reverse."
   );
 
-  // ── VOL vs 30D (column I) ──────────────────────────────────
+  // ── VOL vs 30D ─────────────────────────────────────────────
   sheet.getRange(headerRow, COL.VOLUME_VS_AVG).setNote(
-    "🔥 VOL vs 30D AVG\n" +
+    "🔥 VOL vs 30D AVG (PACE-ADJUSTED)\n" +
     "─────────────────────\n" +
-    "Today's cumulative volume as a PERCENTAGE of the\n" +
-    "30-day average daily volume.\n\n" +
+    "Today's cumulative volume as a PERCENTAGE of how much\n" +
+    "an average day would have traded by this point in the\n" +
+    "session — not the full-day total. This keeps the\n" +
+    "reading fair in the morning instead of always low.\n\n" +
     "HOW TO READ IT:\n" +
-    "  100% = exactly on pace with the 30-day average\n" +
-    "  150% = 50% MORE than average → active session\n" +
-    "   60% = 40% LESS than average → thin session\n\n" +
+    "  100% = exactly on pace with an average day\n" +
+    "  150% = 50% MORE than average pace → active session\n" +
+    "   60% = 40% LESS than average pace → thin session\n\n" +
     "COLOR uses the same green/red scale as price moves:\n" +
-    "  🟢 Green = above-average volume (conviction)\n" +
-    "  🔴 Red   = below-average volume (caution)\n" +
-    "  Both cells (H and I) share the same color so\n" +
+    "  🟢 Green = above-average pace (conviction)\n" +
+    "  🔴 Red   = below-average pace (caution)\n" +
+    "  The VOLUME and VOL-vs-30D cells share one color so\n" +
     "  you can glance at either one.\n\n" +
     "WHY IT MATTERS:\n" +
     "  • Big move on GREEN volume = more trustworthy\n" +
     "  • Big move on RED volume = possible fake-out\n" +
     "  • Watch for volume spikes near S/R zones\n\n" +
-    "SOURCE: 30-day avg fetched fresh from Yahoo Finance\n" +
-    "daily bars each tick (free, no API key required)."
+    "SOURCE: 30-day avg from Yahoo Finance daily bars,\n" +
+    "cached ~6h (free, no API key required)."
   );
 
-  Logger.log("Volume header notes added at row " + headerRow + ".");
+  // ── TREND STATUS (column J) ────────────────────────────────
+  sheet.getRange(headerRow, COL.TREND).setNote(
+    "🌐 TREND STATUS\n" +
+    "─────────────────────\n" +
+    "A one-line read on where SPY is heading right now,\n" +
+    "rebuilt each tick from intraday price history.\n\n" +
+    "It combines up to THREE parts, separated by │ :\n\n" +
+    "1) DIRECTION — from two moving averages of recent\n" +
+    "   closes (a fast 9-bar vs a slower 21-bar EMA):\n" +
+    "   📈 UPTREND      fast EMA clearly above slow\n" +
+    "   📉 DOWNTREND    fast EMA clearly below slow\n" +
+    "   ⚖️ CONSOLIDATING  the two EMAs are entangled\n" +
+    "   📈/📉 ABOVE/BELOW OPEN  not enough bars for the\n" +
+    "       slow EMA yet, so it compares to today's open\n" +
+    "   ⏳ GATHERING DATA  too few bars early in the day\n\n" +
+    "2) NEAREST S/R ZONE — shown only when price is within\n" +
+    "   ~0.20% of a key level (prev close, day open, day\n" +
+    "   high/low, or a $5 round number):\n" +
+    "   🟢 Near support     price resting on a floor\n" +
+    "   🔴 Near resistance  price pressing on a ceiling\n" +
+    "   The % tells you how far away that level is.\n\n" +
+    "3) MOMENTUM — pace over the last few bars:\n" +
+    "   ⚡ ACCELERATING UP / 💨 ACCELERATING DOWN  (fast)\n" +
+    "   ↗️ GRINDING UP / ↘️ GRINDING DOWN          (steady)\n" +
+    "   ➡️ FLAT                                    (going nowhere)\n\n" +
+    "HOW TO READ IT:\n" +
+    "  • Direction + momentum AGREE → trend has legs\n" +
+    "  • Direction + momentum DISAGREE → possible stall\n" +
+    "  • A direction read pinned against resistance often\n" +
+    "    precedes a pause or reversal — watch the next ticks.\n\n" +
+    "⚠️ Early in the day the read says GATHERING DATA or\n" +
+    "   ABOVE/BELOW OPEN until enough 5-min bars accumulate\n" +
+    "   for the EMAs — that is expected, not an error."
+  );
+
+  Logger.log("Volume + trend header notes added at row " + headerRow + ".");
 }
 
 // ─────────────────────────────────────────────────────────────
