@@ -40,6 +40,11 @@ function setupSheets() {
   }
   var holidayNote = "✅ Holidays loaded from built-in list (2025–2026).";
 
+  // ── Forecast sheet ────────────────────────────────────────
+  if (!ss.getSheetByName(SHEET_FORECAST)) {
+    setupForecastSheet(ss);
+  }
+
   SpreadsheetApp.getUi().alert(
     "🚀 SPY TRACKER READY!\n\n" +
     "✅ Sheets created and themed.\n" +
@@ -53,6 +58,7 @@ function setupSheets() {
     "   Menu → ⚡ SPY TRACKER → Install 5-Min Trigger\n\n" +
     "3. Test: Menu → ⚡ SPY TRACKER → Run Now (Manual Tick)"
   );
+
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -195,8 +201,4 @@ function getOrCreateSheet(ss, name) {
   var sheet = ss.getSheetByName(name);
   if (!sheet) sheet = ss.insertSheet(name);
   return sheet;
-}
-
-if (!ss.getSheetByName(SHEET_FORECAST)) {
-  setupForecastSheet(ss);
 }
