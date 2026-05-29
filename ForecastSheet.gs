@@ -365,26 +365,26 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
     "Generate a full-day SPY price forecast for all 14 slots: " + slotLabels + ".\n" +
     "STRICT RULES — you MUST follow these exactly:\n" +
     "  1. Return ONLY raw JSON, no markdown, no backticks, no extra text.\n" +
-    "  2. Every memo MUST be 8 words or less.\n" +
+    "  2. Every memo MUST be 16 words or less.\n" +
     "  3. ALL 14 slots required — do not skip any.\n" +
     "  4. Price to 2 decimal places, conf is integer 1-10.\n" +
     "  5. Use S/R levels and Bear Trap phase to inform price targets.\n\n" +
     "Return this exact structure with ALL 14 slots:\n" +
     '{"slots":[' +
-    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"9:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"10:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"10:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"11:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"11:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"12:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"12:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"1:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"1:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"2:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"2:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
-    '{"time":"3:00 PM","price":0.00,"conf":5,"memo":"8 words max"}' +
+    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"9:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"10:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"10:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"11:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"11:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"12:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"12:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"1:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"1:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"2:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"2:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
+    '{"time":"3:00 PM","price":0.00,"conf":5,"memo":"16 words max"}' +
     ']}\n\n' +
     "All 14 slots required: " + slotLabels;
 
