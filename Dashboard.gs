@@ -5,9 +5,9 @@
 //  All times CST 12-hour format.
 //
 //  CARD LAYOUT:
-//    Row 1 (SPY rows 4–10):   CARD_L = SPY Price   | CARD_R = Market Status
-//    Row 2 (AI  rows 12–17):  CARD_L = AI Status   | CARD_R = (blank right)
-//    Row 3 (ES  rows 19–25):  CARD_L = VIX         | CARD_R = ES Futures
+//    Row 1 (SPY rows 4–10):   CARD_L = SPY Price        | CARD_R = Market Status
+//    Row 2 (AI  rows 12–17):  CARD_L = AI Status        | CARD_R = ES Alignment (Bear Trap)
+//    Row 3 (ES  rows 19–25):  CARD_L = VIX Regime       | CARD_R = ES Futures (Bear Trap Signal)
 //    Row 4 (BR  rows 27–37):  full-width AI Briefing
 // ============================================================
 
@@ -158,8 +158,9 @@ function runDashboardTick(data, now) {
     writeSPYCard(sheet, data, now);
     writeMarketCard(sheet, cstMins, dow);
     writeAICard(sheet, cstMins, dow);
-    writeVIXCard(sheet, vixData);   // ← CARD_L at ES rows (was blank/stale)
-    writeESCard(sheet, esData);     // ← CARD_R at ES rows
+    writeESAlignmentCard(sheet, esData);  // ← CARD_R at AI rows (was blank/stale)
+    writeVIXCard(sheet, vixData);         // ← CARD_L at ES rows
+    writeESCard(sheet, esData);           // ← CARD_R at ES rows
     writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldBrief);
 
     // Subtitle — Utilities.formatDate works correctly on raw UTC Date
@@ -347,7 +348,80 @@ function writeAICard(sheet, cstMins, dow) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 4a — VIX  (CARD_L at ES rows 19–25)
+// CARD 3b — ES ALIGNMENT  (CARD_R at AI rows 12–17)
+// Shows the Bear Trap alignment tag — this slot was previously
+// blank/stale, causing the phantom "top ES box".
+// ─────────────────────────────────────────────────────────────
+function writeESAlignmentCard(sheet, esData) {
+  try {
+    var col = DC.CARD_R;
+
+    sheet.getRange(DR.AI_HDR, col).setValue("  📡  ES — BEAR TRAP ALIGNMENT")
+      .setBackground(DB.HDR_ES).setFontColor(DB.TXT_HDR_ES)
+      .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.AI_HDR, 28);
+
+    if (!esData) {
+      sheet.getRange(DR.AI_MODE, col).setValue("—")
+        .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+        .setFontSize(16).setFontWeight("bold").setHorizontalAlignment("left").setVerticalAlignment("middle");
+      sheet.setRowHeight(DR.AI_MODE, 30);
+      sheet.getRange(DR.AI_WATCH, col).setValue("No ES data")
+        .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+        .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
+      sheet.setRowHeight(DR.AI_WATCH, 22);
+      sheet.getRange(DR.AI_DIV,  col).setValue("").setBackground(DB.BG_DIVIDER); sheet.setRowHeight(DR.AI_DIV, 2);
+      sheet.getRange(DR.AI_NEXT, col).setValue("").setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM).setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle"); sheet.setRowHeight(DR.AI_NEXT, 18);
+      sheet.getRange(DR.AI_PAD,  col).setValue("").setBackground(DB.BG_CARD); sheet.setRowHeight(DR.AI_PAD, 10);
+      return;
+    }
+
+    var alignTag    = esData.alignmentTag || "ES MONITOR";
+    var alignColor  = alignTag === "ES VOID"    ? DB.TXT_RED
+                    : alignTag === "ES CAUTION" ? DB.TXT_ORANGE : DB.TXT_GOLD;
+    var alignEmoji  = alignTag === "ES VOID"    ? "❌"
+                    : alignTag === "ES CAUTION" ? "⚠️" : "✅";
+    var alignAction = alignTag === "ES VOID"    ? "DO NOT TRADE — Futures voiding setup"
+                    : alignTag === "ES CAUTION" ? "Caution — Futures rising against trap"
+                    : "Setup live. Watch for morning flush.";
+
+    var trendColor  = esData.trend === "FADING"   ? DB.TXT_RED
+                    : esData.trend === "CLIMBING" ? DB.TXT_GREEN : DB.TXT_GOLD;
+
+    // Big alignment tag
+    sheet.getRange(DR.AI_MODE, col)
+      .setValue(alignEmoji + "  " + alignTag)
+      .setBackground(DB.BG_CARD).setFontColor(alignColor)
+      .setFontSize(14).setFontWeight("bold")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.AI_MODE, 30);
+
+    // Trend line
+    sheet.getRange(DR.AI_WATCH, col)
+      .setValue(esData.trend + "  ·  " + (esData.changePct >= 0 ? "+" : "") + esData.changePct.toFixed(2) + "%")
+      .setBackground(DB.BG_CARD).setFontColor(trendColor)
+      .setFontSize(11).setFontWeight("bold")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.AI_WATCH, 22);
+
+    sheet.getRange(DR.AI_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
+    sheet.setRowHeight(DR.AI_DIV, 2);
+
+    // Action line
+    sheet.getRange(DR.AI_NEXT, col)
+      .setValue(alignAction)
+      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.AI_NEXT, 18);
+
+    sheet.getRange(DR.AI_PAD, col).setValue("").setBackground(DB.BG_CARD);
+    sheet.setRowHeight(DR.AI_PAD, 10);
+
+  } catch (e) { Logger.log("writeESAlignmentCard ERROR: " + e.message); }
+}
+
+
 // This card was missing — its absence left stale content in
 // CARD_L at these rows, causing the phantom "second ES box".
 // ─────────────────────────────────────────────────────────────
@@ -355,7 +429,7 @@ function writeVIXCard(sheet, vixData) {
   try {
     var col = DC.CARD_L;
 
-    sheet.getRange(DR.ES_HDR, col).setValue("  📊  VIX — VOLATILITY")
+    sheet.getRange(DR.ES_HDR, col).setValue("  📊  VIX — VOLATILITY REGIME")
       .setBackground(DB.HDR_VIX).setFontColor(DB.TXT_HDR_VIX)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
@@ -439,7 +513,7 @@ function writeESCard(sheet, esData) {
   try {
     var col = DC.CARD_R;
 
-    sheet.getRange(DR.ES_HDR, col).setValue("  📡  ES FUTURES")
+    sheet.getRange(DR.ES_HDR, col).setValue("  📡  ES — BEAR TRAP SIGNAL")
       .setBackground(DB.HDR_ES).setFontColor(DB.TXT_HDR_ES)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
@@ -588,7 +662,7 @@ function generateDashboardBrief(data, esData, vixData, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 2000, temperature: 0.4 }
+      generationConfig: { maxOutputTokens: 200, temperature: 0.4 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
