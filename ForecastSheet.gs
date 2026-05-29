@@ -1,6 +1,32 @@
 // ============================================================
 // FILE: ForecastSheet.gs
 // PURPOSE: 📡 FORECAST — AI 30-minute SPY price forecasting.
+//
+//  FEATURES:
+//    1. Forecast Table  — 14 rows (8:30am–3:00pm CST, every 30min)
+//                         Each row: time slot, predicted price,
+//                         confidence (1–10), AI memo, actual price
+//                         (filled in as the day progresses).
+//    2. Intraday Chart  — Line chart: solid actual price line +
+//                         ghost forecast line. X-axis always spans
+//                         full session 8:30am–3:00pm CST.
+//
+//  CHART NOTE:
+//    The chart always renders because the predicted price column
+//    is always populated after the first forecast. The actual
+//    line grows in as the day progresses. Before market open
+//    only the gold forecast line is visible — that is correct.
+//
+//  AI CONTEXT (enriched):
+//    • SPY price, OHLC, VWAP
+//    • VIX regime + ES futures trend
+//    • Morning Brief targets (flush/flip/rip/EOD)
+//    • S1/R1 support & resistance levels from Logger
+//    • Bear Trap phase + confidence score
+//    • Volume vs 30-day average
+//    • Last 12 SPY LOG ticks
+//
+//  All times displayed in CST 12-hour format.
 // ============================================================
 
 var SHEET_FORECAST = "📡 FORECAST";
@@ -15,9 +41,9 @@ var FC = {
   GAP_ROW:          4,
   HEADER_ROW:       5,
   DATA_START_ROW:   6,   // rows 6–19 = 14 forecast slots
-  DATA_END_ROW:     19,  // row 19 = last data row (3:00 PM)
-  GAP2_ROW:         20,  // gap AFTER data, before chart
-  CHART_ANCHOR_ROW: 22,  // chart placed here — clear of data
+  DATA_END_ROW:     19,  // row 19 = 3:00 PM slot
+  GAP2_ROW:         20,  // gap after data
+  CHART_ANCHOR_ROW: 22,  // chart placed here
 
   COL_TIME:         1,
   COL_PRED:         2,
@@ -36,8 +62,9 @@ var FC = {
   OVERNIGHT_INTERVAL_MIN: 240,
   COOLDOWN_MIN:           120,
 
-  SLOT_COUNT: 14   // 8:30, 9:00, 9:30, 10:00, 10:30, 11:00, 11:30,
-                   // 12:00, 12:30, 1:00, 1:30, 2:00, 2:30, 3:00 = 14
+  SLOT_COUNT: 14
+  // 8:30, 9:00, 9:30, 10:00, 10:30, 11:00, 11:30,
+  // 12:00, 12:30, 1:00, 1:30, 2:00, 2:30, 3:00
 };
 
 // Market session slots — CST minutes from midnight
@@ -46,7 +73,8 @@ var FORECAST_SLOTS = (function() {
   for (var m = FC.MARKET_OPEN_MIN; m <= FC.MARKET_CLOSE_MIN; m += 30) {
     slots.push(m);
   }
-  return slots; // [510, 540, 570, 600, 630, 660, 690, 720, 750, 780, 810, 840, 870, 900]
+  return slots;
+  // [510,540,570,600,630,660,690,720,750,780,810,840,870,900] = 14 entries
 })();
 
 // ─────────────────────────────────────────────────────────────
@@ -109,28 +137,20 @@ function shouldFireForecast(now) {
       ? 9999
       : (cstMins >= lastRun ? cstMins - lastRun : (1440 - lastRun) + cstMins);
 
-    if (isWeekend) {
-      return elapsed >= FC.OVERNIGHT_INTERVAL_MIN;
-    }
+    if (isWeekend) return elapsed >= FC.OVERNIGHT_INTERVAL_MIN;
 
     if (cstMins >= FC.EARLY_AM_MIN && cstMins < FC.MARKET_OPEN_MIN) {
       var earlyFired = getFlag("FC_EARLY_AM_FIRED_TODAY");
       var todayStr   = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
-      if (earlyFired !== todayStr && elapsed >= FC.COOLDOWN_MIN) {
-        return true;
-      }
-      return false;
+      return (earlyFired !== todayStr && elapsed >= FC.COOLDOWN_MIN);
     }
 
     if (cstMins >= FC.MARKET_OPEN_MIN && cstMins < FC.MARKET_CLOSE_MIN) {
       return elapsed >= FC.MARKET_INTERVAL_MIN;
     }
 
-    if (cstMins < FC.EARLY_AM_MIN || cstMins >= FC.MARKET_CLOSE_MIN) {
-      return elapsed >= FC.OVERNIGHT_INTERVAL_MIN;
-    }
+    return elapsed >= FC.OVERNIGHT_INTERVAL_MIN;
 
-    return false;
   } catch (e) {
     Logger.log("shouldFireForecast ERROR: " + e.message);
     return false;
@@ -194,17 +214,12 @@ function generateForecast(sheet, data, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens: 2500,
-        temperature: 0.3
-      }
+      generationConfig: { maxOutputTokens: 2500, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
-      method:             "post",
-      contentType:        "application/json",
-      payload:            payload,
-      muteHttpExceptions: true
+      method: "post", contentType: "application/json",
+      payload: payload, muteHttpExceptions: true
     });
 
     if (resp.getResponseCode() !== 200) {
@@ -222,10 +237,7 @@ function generateForecast(sheet, data, now) {
                 ? json.candidates[0].content.parts[0].text.trim()
                 : null;
 
-    if (!rawText) {
-      Logger.log("FC: Gemini returned empty content.");
-      return;
-    }
+    if (!rawText) { Logger.log("FC: Gemini returned empty content."); return; }
 
     var clean = rawText.replace(/```json|```/gi, "").trim();
 
@@ -246,20 +258,19 @@ function generateForecast(sheet, data, now) {
 
     var nextMins = cstMins + (
       (cstMins >= FC.MARKET_OPEN_MIN && cstMins < FC.MARKET_CLOSE_MIN)
-        ? FC.MARKET_INTERVAL_MIN
-        : FC.OVERNIGHT_INTERVAL_MIN
+        ? FC.MARKET_INTERVAL_MIN : FC.OVERNIGHT_INTERVAL_MIN
     );
-    var nextLabel = fcMinsToLabel(nextMins % 1440);
     sheet.getRange(FC.META_ROW, 1, 1, FC.TOTAL_COLS).merge()
-      .setValue("🕐  Last updated: " + timeStr + " CST  ·  Next update: ~" + nextLabel + " CST")
+      .setValue("🕐  Last updated: " + timeStr + " CST  ·  Next update: ~" +
+                fcMinsToLabel(nextMins % 1440) + " CST")
       .setFontColor(FC_COLOR.TXT_META).setFontSize(9)
       .setHorizontalAlignment("center").setBackground(FC_COLOR.BG_BANNER);
 
     setFlag("FC_LAST_RUN_MINS", cstMins.toString());
 
     var dow = parseInt(Utilities.formatDate(now, "America/Chicago", "u"), 10) % 7;
-    var isWeekend = (dow === 0 || dow === 6);
-    if (!isWeekend && cstMins >= FC.EARLY_AM_MIN && cstMins < FC.MARKET_OPEN_MIN) {
+    if (dow !== 0 && dow !== 6 &&
+        cstMins >= FC.EARLY_AM_MIN && cstMins < FC.MARKET_OPEN_MIN) {
       setFlag("FC_EARLY_AM_FIRED_TODAY", todayStr);
     }
 
@@ -273,8 +284,8 @@ function generateForecast(sheet, data, now) {
 
 // ─────────────────────────────────────────────────────────────
 // BUILD FORECAST PROMPT
-// All 14 slots explicitly listed in JSON template so Gemini
-// cannot skip any. Slot count references updated to 14.
+// Enriched with S/R levels, Bear Trap phase/confidence, volume.
+// Scorecard win rate intentionally excluded per user preference.
 // ─────────────────────────────────────────────────────────────
 function buildForecastPrompt(data, now, cstMins, vixData, esData,
                               mbSetup, mbFlush, mbFlip, mbRip, mbEod,
@@ -283,6 +294,36 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
   var vixStr = vixData ? vixData.price.toFixed(1) + " [" + vixData.regime + "]" : "unknown";
   var esStr  = esData  ? "$" + esData.price.toFixed(2) + " " + esData.trend    : "unknown";
 
+  // ── S/R levels from Logger flags ─────────────────────────
+  var s1 = getFlag("SESSION_LAST_S1") || "—";
+  var s2 = getFlag("SESSION_LAST_S2") || "—";
+  var r1 = getFlag("SESSION_LAST_R1") || "—";
+  var r2 = getFlag("SESSION_LAST_R2") || "—";
+
+  // ── Bear Trap context ─────────────────────────────────────
+  var btPhase = getFlag("BT_LAST_PHASE")      || "—";
+  var btConf  = getFlag("BT_LAST_CONFIDENCE") || "—";
+  var btFlip  = getFlag("BT_FLIP_DETECTED")   === "YES" ? "YES" : "NO";
+  var btRip   = getFlag("BT_RIP_DETECTED")    === "YES" ? "YES" : "NO";
+  var btOHTag = getFlag("BT_OVERNIGHT_TAGGED") === "YES" ? "YES" : "NO";
+
+  // ── Volume context ────────────────────────────────────────
+  var volStr = "—";
+  if (data.volumeToday > 0 && data.avgVol30 > 0) {
+    var volPct = Math.round((data.volumeToday / data.avgVol30) * 100);
+    volStr = volPct + "% of 30d avg (" +
+             (volPct >= 100 ? "above avg — conviction" : "below avg — caution") + ")";
+  }
+
+  // ── VWAP distance ─────────────────────────────────────────
+  var vwapStr = "—";
+  if (data.vwap && data.vwap > 0) {
+    var vwapDist = ((data.price - data.vwap) / data.vwap * 100).toFixed(2);
+    vwapStr = "$" + data.vwap.toFixed(2) + " (" + vwapDist + "% " +
+              (data.price >= data.vwap ? "above" : "below") + ")";
+  }
+
+  // ── Morning Brief context ─────────────────────────────────
   var mbStr = "";
   if (mbFlush > 0 || mbFlip > 0 || mbRip > 0 || mbEod > 0) {
     mbStr = "Morning Brief setup: " + mbSetup + "\n" +
@@ -290,7 +331,7 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
             "  Flip zone:    $" + (mbFlip  > 0 ? mbFlip.toFixed(2)  : "n/a") + "\n" +
             "  Rip target:   $" + (mbRip   > 0 ? mbRip.toFixed(2)   : "n/a") + "\n" +
             "  EOD target:   $" + (mbEod   > 0 ? mbEod.toFixed(2)   : "n/a") + "\n" +
-            "  Rationale:    " + mbRationale + "\n";
+            (mbRationale ? "  Rationale: " + mbRationale + "\n" : "");
   }
 
   var slotLabels = FORECAST_SLOTS.map(function(m) { return fcMinsToLabel(m); }).join(", ");
@@ -300,37 +341,50 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
     "=== CURRENT MARKET DATA ===\n" +
     "SPY price: $" + data.price.toFixed(2) + "\n" +
     "Prev close: $" + (data.prevClose || data.price).toFixed(2) + "\n" +
-    "Day open: $"   + (data.dayOpen   || data.price).toFixed(2) + "\n" +
-    "Day high: $"   + (data.dayHigh   || data.price).toFixed(2) + "\n" +
-    "Day low: $"    + (data.dayLow    || data.price).toFixed(2) + "\n" +
-    "VWAP: $"       + (data.vwap      || 0).toFixed(2) + "\n" +
+    "Day open:   $" + (data.dayOpen   || data.price).toFixed(2) + "\n" +
+    "Day high:   $" + (data.dayHigh   || data.price).toFixed(2) + "\n" +
+    "Day low:    $" + (data.dayLow    || data.price).toFixed(2) + "\n" +
+    "VWAP: " + vwapStr + "\n" +
+    "Volume: " + volStr + "\n" +
     "VIX: " + vixStr + "\n" +
     "ES Futures: " + esStr + "\n\n" +
+    "=== SUPPORT & RESISTANCE ===\n" +
+    "S1 (nearest support):    " + s1 + "\n" +
+    "S2 (next support):       " + s2 + "\n" +
+    "R1 (nearest resistance): " + r1 + "\n" +
+    "R2 (next resistance):    " + r2 + "\n\n" +
+    "=== BEAR TRAP STATUS ===\n" +
+    "Phase: " + btPhase + "\n" +
+    "Confidence: " + btConf + "%\n" +
+    "Flip detected: " + btFlip + "\n" +
+    "Rip detected: " + btRip + "\n" +
+    "Overnight high tagged: " + btOHTag + "\n\n" +
     (mbStr ? "=== MORNING BRIEF CONTEXT ===\n" + mbStr + "\n" : "") +
     (recentContext ? "=== RECENT PRICE ACTION (last 12 ticks) ===\n" + recentContext + "\n\n" : "") +
     "=== INSTRUCTIONS ===\n" +
     "Generate a full-day SPY price forecast for all 14 slots: " + slotLabels + ".\n" +
     "STRICT RULES — you MUST follow these exactly:\n" +
     "  1. Return ONLY raw JSON, no markdown, no backticks, no extra text.\n" +
-    "  2. Every memo MUST be 15 words or less.\n" +
+    "  2. Every memo MUST be 8 words or less.\n" +
     "  3. ALL 14 slots required — do not skip any.\n" +
-    "  4. Price to 2 decimal places, conf is integer 1-10.\n\n" +
+    "  4. Price to 2 decimal places, conf is integer 1-10.\n" +
+    "  5. Use S/R levels and Bear Trap phase to inform price targets.\n\n" +
     "Return this exact structure with ALL 14 slots:\n" +
     '{"slots":[' +
-    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"9:30 AM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"10:00 AM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"10:30 AM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"11:00 AM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"11:30 AM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"12:00 PM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"12:30 PM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"1:00 PM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"1:30 PM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"2:00 PM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"2:30 PM","price":0.00,"conf":5,"memo":"15 words max"},' +
-    '{"time":"3:00 PM","price":0.00,"conf":5,"memo":"15 words max"}' +
+    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"9:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"10:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"10:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"11:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"11:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"12:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"12:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"1:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"1:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"2:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"2:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"3:00 PM","price":0.00,"conf":5,"memo":"8 words max"}' +
     ']}\n\n' +
     "All 14 slots required: " + slotLabels;
 
@@ -378,8 +432,7 @@ function writeForecastRows(sheet, slots, now, cstMins) {
   try {
     var existingActuals = [];
     for (var i = 0; i < FC.SLOT_COUNT; i++) {
-      var row  = FC.DATA_START_ROW + i;
-      var cell = sheet.getRange(row, FC.COL_ACTUAL).getValue();
+      var cell = sheet.getRange(FC.DATA_START_ROW + i, FC.COL_ACTUAL).getValue();
       existingActuals[i] = (cell && cell !== "" && !isNaN(parseFloat(cell)))
         ? parseFloat(cell) : null;
     }
@@ -389,13 +442,12 @@ function writeForecastRows(sheet, slots, now, cstMins) {
       var row      = FC.DATA_START_ROW + s;
       var slotMins = FORECAST_SLOTS[s];
 
-      var timeLabel = fcMinsToLabel(slotMins);
-      var pred      = parseFloat(aiSlot.price || 0) || 0;
-      var conf      = parseInt(aiSlot.conf    || 5) || 5;
-      var memo      = (aiSlot.memo || "").toString().substring(0, 80);
-      var actual    = existingActuals[s];
+      var pred   = parseFloat(aiSlot.price || 0) || 0;
+      var conf   = parseInt(aiSlot.conf    || 5) || 5;
+      var memo   = (aiSlot.memo || "").toString().substring(0, 80);
+      var actual = existingActuals[s];
 
-      sheet.getRange(row, FC.COL_TIME).setValue(timeLabel);
+      sheet.getRange(row, FC.COL_TIME).setValue(fcMinsToLabel(slotMins));
       if (pred > 0) sheet.getRange(row, FC.COL_PRED).setValue(pred);
       sheet.getRange(row, FC.COL_CONF).setValue(conf);
       sheet.getRange(row, FC.COL_MEMO).setValue(memo);
@@ -508,18 +560,23 @@ function applyForecastRowFormat(sheet, row, slotIdx, slotMins, cstMins, conf, pr
 
 // ─────────────────────────────────────────────────────────────
 // BUILD / REFRESH FORECAST CHART
+//
+// FIX: Chart always has data to draw because the predicted
+// price column (COL_PRED) is always populated after the first
+// forecast. Before market open, only the gold forecast line
+// renders. The cyan actual line grows in during the session.
+// This prevents the empty-box problem when actuals are absent.
 // ─────────────────────────────────────────────────────────────
 function buildForecastChart(sheet) {
   try {
     var existing = sheet.getCharts();
     existing.forEach(function(c) { sheet.removeChart(c); });
 
-    var timeRange   = sheet.getRange(FC.HEADER_ROW, FC.COL_TIME,
-                                     FC.DATA_END_ROW - FC.HEADER_ROW + 1, 1);
-    var predRange   = sheet.getRange(FC.HEADER_ROW, FC.COL_PRED,
-                                     FC.DATA_END_ROW - FC.HEADER_ROW + 1, 1);
-    var actualRange = sheet.getRange(FC.HEADER_ROW, FC.COL_ACTUAL,
-                                     FC.DATA_END_ROW - FC.HEADER_ROW + 1, 1);
+    // Range spans header row + all 14 data rows
+    var numRows     = FC.DATA_END_ROW - FC.HEADER_ROW + 1;
+    var timeRange   = sheet.getRange(FC.HEADER_ROW, FC.COL_TIME,   numRows, 1);
+    var predRange   = sheet.getRange(FC.HEADER_ROW, FC.COL_PRED,   numRows, 1);
+    var actualRange = sheet.getRange(FC.HEADER_ROW, FC.COL_ACTUAL, numRows, 1);
 
     var chart = sheet.newChart()
       .setChartType(Charts.ChartType.LINE)
@@ -540,15 +597,21 @@ function buildForecastChart(sheet) {
       .setOption("backgroundColor",   { fill: "#0d0d2b" })
       .setOption("titleTextStyle",     { color: "#00e5ff", fontSize: 12, bold: true })
       .setOption("hAxis", {
-        textStyle: { color: "#7070aa", fontSize: 9 }, gridlines: { color: "#1a1a3e" },
+        textStyle: { color: "#7070aa", fontSize: 9 },
+        gridlines: { color: "#1a1a3e" },
         title: "Time (CST)", titleTextStyle: { color: "#5a5a8a" }
       })
       .setOption("vAxis", {
-        textStyle: { color: "#7070aa", fontSize: 9 }, gridlines: { color: "#1a1a3e" },
-        title: "SPY Price ($)", titleTextStyle: { color: "#5a5a8a" }, format: "$#,##0.00"
+        textStyle: { color: "#7070aa", fontSize: 9 },
+        gridlines: { color: "#1a1a3e" },
+        title: "SPY Price ($)", titleTextStyle: { color: "#5a5a8a" },
+        format: "$#,##0.00"
       })
       .setOption("legend", { position: "top", textStyle: { color: "#aaaacc", fontSize: 10 } })
-      .setOption("chartArea", { backgroundColor: "#0a0a14", top: 40, left: 60, width: "82%", height: "72%" })
+      .setOption("chartArea", {
+        backgroundColor: "#0a0a14",
+        top: 40, left: 60, width: "82%", height: "72%"
+      })
       .setOption("crosshair", { trigger: "both", color: "#3d3d6b" })
       .build();
 
@@ -577,8 +640,10 @@ function setupForecastSheet(ss) {
 
   var neededCols = FC.TOTAL_COLS;
   var neededRows = FC.CHART_ANCHOR_ROW + 25;
-  if (sheet.getMaxColumns() < neededCols) sheet.insertColumnsAfter(sheet.getMaxColumns(), neededCols - sheet.getMaxColumns());
-  if (sheet.getMaxRows() < neededRows)    sheet.insertRowsAfter(sheet.getMaxRows(), neededRows - sheet.getMaxRows());
+  if (sheet.getMaxColumns() < neededCols)
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), neededCols - sheet.getMaxColumns());
+  if (sheet.getMaxRows() < neededRows)
+    sheet.insertRowsAfter(sheet.getMaxRows(), neededRows - sheet.getMaxRows());
 
   sheet.getRange(1, 1, neededRows, neededCols).setBackground(FC_COLOR.BG_SHEET);
 
@@ -592,7 +657,7 @@ function setupForecastSheet(ss) {
 
   // Row 2: Subtitle
   sheet.getRange(FC.SUBTITLE_ROW, 1, 1, neededCols).merge()
-    .setValue("AI predicts SPY price at each 30-min session mark · Updates every 30 min during market hours · 4 hrs overnight/weekend · 8:00 AM CST pre-market preview")
+    .setValue("AI predicts SPY price at each 30-min mark · Updates every 30 min market hours · 4 hrs overnight/weekend · 8:00 AM CST pre-market preview")
     .setBackground(FC_COLOR.BG_BANNER).setFontColor(FC_COLOR.TXT_META)
     .setFontSize(8).setHorizontalAlignment("center").setVerticalAlignment("middle");
   sheet.setRowHeight(FC.SUBTITLE_ROW, 18);
@@ -620,11 +685,10 @@ function setupForecastSheet(ss) {
   for (var i = 0; i < FC.SLOT_COUNT; i++) {
     var row      = FC.DATA_START_ROW + i;
     var slotMins = FORECAST_SLOTS[i];
-    var label    = fcMinsToLabel(slotMins);
     var rowBg    = i % 2 === 0 ? FC_COLOR.BG_ROW : FC_COLOR.BG_ROW_ALT;
 
     sheet.getRange(row, 1, 1, neededCols).setBackground(rowBg);
-    sheet.getRange(row, FC.COL_TIME).setValue(label)
+    sheet.getRange(row, FC.COL_TIME).setValue(fcMinsToLabel(slotMins))
       .setFontColor(FC_COLOR.TXT_TIME).setFontFamily(BT_FONT.DATA)
       .setFontSize(9).setHorizontalAlignment("center").setVerticalAlignment("middle");
     sheet.getRange(row, FC.COL_PRED).setValue("—")
@@ -647,10 +711,14 @@ function setupForecastSheet(ss) {
 
   // Header notes
   sheet.getRange(FC.HEADER_ROW, FC.COL_CONF).setNote(
-    "💡 CONFIDENCE (1–10)\n─────────────────\n8–10 = High\n5–7  = Moderate\n1–4  = Low\n\nDrops for slots far in the future."
+    "💡 CONFIDENCE (1–10)\n─────────────────\n" +
+    "8–10 = High confidence\n5–7  = Moderate\n1–4  = Low\n\n" +
+    "Drops for slots far in the future."
   );
   sheet.getRange(FC.HEADER_ROW, FC.COL_DIFF).setNote(
-    "📊 DIFF\n─────────────────\nActual − Predicted.\nGreen = SPY beat forecast.\nRed = SPY missed.\nBlank until actual fills."
+    "📊 DIFF\n─────────────────\n" +
+    "Actual − Predicted.\nGreen = SPY beat forecast.\n" +
+    "Red = SPY missed.\nBlank until actual fills."
   );
 
   sheet.setFrozenRows(FC.HEADER_ROW);
@@ -694,13 +762,15 @@ function setupForecastSheetFromMenu() {
     "• Market hours: updates every 30 min (8:30 AM–3:00 PM)\n" +
     "• Overnight/weekend: every 4 hours\n" +
     "• Actual prices fill automatically every 5-min tick\n" +
-    "• Chart rebuilds only on forecast updates (~14×/day)\n\n" +
-    "CONTEXT USED:\n" +
-    "• SPY LOG recent ticks\n" +
+    "• Chart shows gold forecast line immediately after first run\n" +
+    "• Cyan actual line grows in during market hours\n\n" +
+    "AI CONTEXT INCLUDES:\n" +
+    "• SPY OHLC, VWAP, volume\n" +
+    "• S1/S2/R1/R2 support & resistance\n" +
+    "• Bear Trap phase + confidence\n" +
     "• VIX + ES futures\n" +
-    "• Morning Brief targets (flush/flip/rip)\n" +
-    "• Previous close\n\n" +
-    "AI BUDGET: ~14 calls/market day · 2500 tokens each"
+    "• Morning Brief targets\n" +
+    "• Last 12 SPY LOG ticks"
   );
 }
 
@@ -727,7 +797,7 @@ function runManualForecast() {
 
     SpreadsheetApp.getUi().alert(
       "✅ Forecast generated!\n\nSPY: $" + data.price.toFixed(2) +
-      "\n\nCheck the 📡 FORECAST sheet."
+      "\n\nCheck the 📡 FORECAST sheet.\nThe gold forecast line should now be visible on the chart."
     );
   } catch (e) {
     Logger.log("runManualForecast ERROR: " + e.message);
