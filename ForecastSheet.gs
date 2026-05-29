@@ -214,7 +214,7 @@ function generateForecast(sheet, data, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 2500, temperature: 0.3 }
+      generationConfig: { maxOutputTokens: 4000, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
