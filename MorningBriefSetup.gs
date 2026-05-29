@@ -10,10 +10,10 @@
 //    4–17   — Prediction panel (filled at 8:25 CST by MorningBrief.gs)
 //    18     — Spacer (6px)
 //    19     — Spacer (6px)
-//    20     — Chart data header row  ← MB.CHART_DATA_START_ROW - 1
+//    20     — Chart data header row  ← MB.CHART_DATA_START_ROW - 1 = 20
 //    21+    — Intraday tracking data ← MB.CHART_DATA_START_ROW = 21
 //
-//  NOTE: MB.CHART_DATA_START_ROW in MorningBrief.gs MUST be 21.
+//  IMPORTANT: MB.CHART_DATA_START_ROW in MorningBrief.gs MUST be 21.
 // ============================================================
 
 function setupMorningBriefSheet(ss) {
@@ -24,17 +24,18 @@ function setupMorningBriefSheet(ss) {
 
   sheet.setTabColor("#e65100");
 
-  // ── Force-clear existing content so re-runs always rebuild cleanly ──
-  if (sheet.getLastRow() > 0) {
-    sheet.clearContents();
-    sheet.clearFormats();
-    sheet.clearNotes();
-  }
-
-  var totalCols = MB_CHART_HEADERS.length + 8;  // 7 data cols + 8 extra = 15
+  // ── Full reset: unmerge first, then clear everything ──────
+  // clearFormats() does NOT unmerge — must breakApart() first
+  // or existing merge regions will fight the new merges.
+  var maxRow = Math.max(sheet.getLastRow(), 25);
+  var totalCols = MB_CHART_HEADERS.length + 8;  // = 15
+  sheet.getRange(1, 1, maxRow, totalCols).breakApart();
+  sheet.clearContents();
+  sheet.clearFormats();
+  sheet.clearNotes();
 
   // ── Row 1: Banner ─────────────────────────────────────────
-  sheet.appendRow(["🌅  Morning Brief  ·  AI Price Predictions  ·  Fires at 8:25 CST"]);
+  sheet.getRange(1, 1).setValue("🌅  Morning Brief  ·  AI Price Predictions  ·  Fires at 8:25 CST");
   sheet.getRange(1, 1, 1, totalCols).merge()
     .setBackground("#0f0800")
     .setFontColor("#ff9800")
@@ -46,7 +47,10 @@ function setupMorningBriefSheet(ss) {
   sheet.setRowHeight(1, 48);
 
   // ── Row 2: Sub-header ─────────────────────────────────────
-  sheet.appendRow(["Gemini analyzes overnight highs, VIX, ES futures, and gap context to predict the day's key SPY price levels.  Updated once at 8:25 CST.  Targets marked ✅ when SPY comes within 0.15%."]);
+  sheet.getRange(2, 1).setValue(
+    "Gemini analyzes overnight highs, VIX, ES futures, and gap context to predict the day's key SPY price levels." +
+    "  Updated once at 8:25 CST.  Targets marked ✅ when SPY comes within 0.15%."
+  );
   sheet.getRange(2, 1, 1, totalCols).merge()
     .setBackground("#130800")
     .setFontColor("#cc7700")
@@ -58,112 +62,87 @@ function setupMorningBriefSheet(ss) {
   sheet.setRowHeight(2, 26);
 
   // ── Row 3: Spacer ─────────────────────────────────────────
-  sheet.appendRow([""]);
-  sheet.getRange(3, 1, 1, totalCols).setBackground("#0a0a12");
+  sheet.getRange(3, 1, 1, totalCols)
+    .merge()
+    .setBackground("#0a0a12");
   sheet.setRowHeight(3, 6);
 
-  // ── Rows 4–17: Prediction panel (populated at 8:25 CST) ──
-  // Pre-fill with visible placeholder text so the section is
-  // clearly visible before the brief fires.
-  var placeholderLabels = [
-    "",                                    // row 4  — date/time header (filled by brief)
-    "Setup Type",                          // row 5
-    "",                                    // row 6  — confidence (right half)
-    "Rationale",                           // row 7
-    "📊  PRICE TARGETS",                  // row 8
-    "📉  FLUSH TARGET",                   // row 9
-    "⚡  FLIP ZONE",                      // row 10
-    "🚀  RIP TARGET",                     // row 11
-    "🎯  EOD TARGET",                     // row 12
-    "",                                    // row 13 — divider
-    "📈  INTRADAY TRACKING",              // row 14
-    "",                                    // row 15
-    "",                                    // row 16
-    ""                                     // row 17
+  // ── Rows 4–17: Prediction panel placeholder ───────────────
+  // These rows are overwritten at 8:25 CST by writeBriefToSheet().
+  // Placeholders give visual structure before the brief fires.
+  //
+  //  Row 4  — Date/time header bar         (orange on near-black)
+  //  Row 5  — Setup type label             (large, bold)
+  //  Row 6  — Confidence sub-line          (dim)
+  //  Row 7  — Rationale text               (italic, wrapped)
+  //  Row 8  — "📊 PRICE TARGETS" header    (section label)
+  //  Row 9  — Flush Target label+value     (target row)
+  //  Row 10 — Flip Zone label+value        (target row)
+  //  Row 11 — Rip Target label+value       (target row)
+  //  Row 12 — EOD Target label+value       (target row)
+  //  Row 13 — Thin divider                 (4px)
+  //  Row 14 — "📈 INTRADAY TRACKING" label (section label)
+  //  Rows 15–17 — reserved padding         (8px each)
+
+  var panelRows = [
+    // [rowNum, text,                              bg,        fg,        fontSize, bold,  height, italic]
+    [4,  "⏳  Brief fires at 8:25 AM CST",         "#0f0800", "#ff9800", 11,    true,  28,   false],
+    [5,  "— Awaiting Setup —",                     "#1a1a2a", "#555577", 16,    true,  44,   false],
+    [6,  "Pre-market confidence: —",               "#1a1a2a", "#555566", 10,    false, 28,   true ],
+    [7,  "Rationale will appear here after brief generates.", "#0a0a18", "#444455", 10, false, 44, true ],
+    [8,  "📊  PRICE TARGETS",                      "#111120", "#555577",  9,    true,  24,   false],
+    [9,  "📉  FLUSH TARGET    —",                  "#0d0d1a", "#555577", 10,    false, 32,   false],
+    [10, "⚡  FLIP ZONE    —",                     "#0d0d1a", "#555577", 10,    false, 32,   false],
+    [11, "🚀  RIP TARGET    —",                    "#0d0d1a", "#555577", 10,    false, 32,   false],
+    [12, "🎯  EOD TARGET    —",                    "#0d0d1a", "#555577", 10,    false, 32,   false],
+    [13, "",                                        "#222230", "#222230",  9,    false,  4,   false],
+    [14, "📈  INTRADAY TRACKING  —  auto-updated every 5 min during market hours",
+                                                   "#080810", "#444466",  8,    false, 20,   false],
+    [15, "",                                        "#080810", "#080810",  9,    false,  8,   false],
+    [16, "",                                        "#080810", "#080810",  9,    false,  8,   false],
+    [17, "",                                        "#080810", "#080810",  9,    false,  8,   false]
   ];
 
-  var placeholderBgs = [
-    "#0f0800",  // row 4
-    "#1a1a2a",  // row 5
-    "#1a1a2a",  // row 6
-    "#0a0a18",  // row 7
-    "#111120",  // row 8
-    "#0d0d1a",  // row 9
-    "#0d0d1a",  // row 10
-    "#0d0d1a",  // row 11
-    "#0d0d1a",  // row 12
-    "#222230",  // row 13 — divider
-    "#080810",  // row 14
-    "#080810",  // row 15
-    "#080810",  // row 16
-    "#080810"   // row 17
-  ];
+  for (var p = 0; p < panelRows.length; p++) {
+    var pr = panelRows[p];
+    var rowNum  = pr[0];
+    var txt     = pr[1];
+    var bg      = pr[2];
+    var fg      = pr[3];
+    var fs      = pr[4];
+    var bold    = pr[5];
+    var ht      = pr[6];
+    var italic  = pr[7];
 
-  var placeholderFgs = [
-    "#ff9800",  // row 4
-    "#444466",  // row 5
-    "#444466",  // row 6
-    "#444455",  // row 7
-    "#555577",  // row 8
-    "#555577",  // row 9
-    "#555577",  // row 10
-    "#555577",  // row 11
-    "#555577",  // row 12
-    "#222230",  // row 13 — divider (invisible text)
-    "#444466",  // row 14
-    "#444466",  // row 15
-    "#444466",  // row 16
-    "#444466"   // row 17
-  ];
-
-  var placeholderHeights = [
-    28,  // row 4
-    40,  // row 5
-    40,  // row 6
-    40,  // row 7
-    22,  // row 8
-    30,  // row 9
-    30,  // row 10
-    30,  // row 11
-    30,  // row 12
-    4,   // row 13 — thin divider
-    20,  // row 14
-    8,   // row 15
-    8,   // row 16
-    8    // row 17
-  ];
-
-  for (var i = 0; i < 14; i++) {
-    var rowNum = 4 + i;
-    sheet.appendRow([placeholderLabels[i] || ""]);
-    sheet.getRange(rowNum, 1, 1, totalCols)
-      .merge()
-      .setBackground(placeholderBgs[i])
-      .setFontColor(placeholderFgs[i])
-      .setFontSize(i === 4 ? 11 : (i === 7 ? 16 : 9))
-      .setFontWeight(i === 7 ? "bold" : "normal")
+    // Set value in col A first, then merge the whole row
+    sheet.getRange(rowNum, 1).setValue(txt);
+    sheet.getRange(rowNum, 1, 1, totalCols).merge()
+      .setBackground(bg)
+      .setFontColor(fg)
+      .setFontSize(fs)
+      .setFontWeight(bold ? "bold" : "normal")
+      .setFontStyle(italic ? "italic" : "normal")
       .setHorizontalAlignment("center")
       .setVerticalAlignment("middle")
-      .setFontStyle(i === 6 ? "italic" : "normal");
-    sheet.setRowHeight(rowNum, placeholderHeights[i]);
+      .setWrap(true);
+    sheet.setRowHeight(rowNum, ht);
   }
 
   // ── Row 18: Spacer ────────────────────────────────────────
-  sheet.appendRow([""]);
-  sheet.getRange(18, 1, 1, totalCols).setBackground("#0a0a12");
+  sheet.getRange(18, 1, 1, totalCols).merge().setBackground("#0a0a12");
   sheet.setRowHeight(18, 6);
 
   // ── Row 19: Spacer ────────────────────────────────────────
-  sheet.appendRow([""]);
-  sheet.getRange(19, 1, 1, totalCols).setBackground("#0a0a12");
+  sheet.getRange(19, 1, 1, totalCols).merge().setBackground("#0a0a12");
   sheet.setRowHeight(19, 6);
 
   // ── Row 20: Chart data header ─────────────────────────────
-  // This is MB.CHART_DATA_START_ROW - 1 = 20
-  // Data rows start at MB.CHART_DATA_START_ROW = 21
-  sheet.appendRow(MB_CHART_HEADERS);
-
-  // Style header across all 7 data columns (A–G), full width
+  // hdrRow = MB.CHART_DATA_START_ROW - 1 = 20
+  // Data rows begin at MB.CHART_DATA_START_ROW = 21
+  for (var h = 0; h < MB_CHART_HEADERS.length; h++) {
+    sheet.getRange(20, h + 1).setValue(MB_CHART_HEADERS[h]);
+  }
+  // Style the 7 data columns individually (no merge — they need separate headers)
   sheet.getRange(20, 1, 1, MB_CHART_HEADERS.length)
     .setBackground("#0d0d2b")
     .setFontColor("#00e5ff")
@@ -172,27 +151,25 @@ function setupMorningBriefSheet(ss) {
     .setFontSize(10)
     .setHorizontalAlignment("center")
     .setVerticalAlignment("middle");
-
-  // Style remaining columns in the row to match (dark bg, no orphan white)
+  // Fill remaining columns in row 20 with matching dark bg
   if (totalCols > MB_CHART_HEADERS.length) {
     sheet.getRange(20, MB_CHART_HEADERS.length + 1, 1, totalCols - MB_CHART_HEADERS.length)
       .setBackground("#0d0d2b");
   }
-  sheet.setRowHeight(20, 32);
+  sheet.setRowHeight(20, 34);
 
   // ── Freeze banner row ─────────────────────────────────────
   sheet.setFrozenRows(1);
 
   // ── Column widths ─────────────────────────────────────────
-  // Generous widths so emoji + text headers don't truncate
-  sheet.setColumnWidth(1, 130);   // ⏱ TIME (CST)
-  sheet.setColumnWidth(2, 130);   // 💰 ACTUAL SPY
-  sheet.setColumnWidth(3, 150);   // 📉 FLUSH TARGET
+  sheet.setColumnWidth(1, 145);   // ⏱ TIME (CST)
+  sheet.setColumnWidth(2, 135);   // 💰 ACTUAL SPY
+  sheet.setColumnWidth(3, 155);   // 📉 FLUSH TARGET
   sheet.setColumnWidth(4, 140);   // ⚡ FLIP ZONE
-  sheet.setColumnWidth(5, 140);   // 🚀 RIP TARGET
-  sheet.setColumnWidth(6, 140);   // 🎯 EOD TARGET
-  sheet.setColumnWidth(7, 160);   // ✅ HIT
-  sheet.setColumnWidth(8, 60);    // gap / chart anchor
+  sheet.setColumnWidth(5, 145);   // 🚀 RIP TARGET
+  sheet.setColumnWidth(6, 145);   // 🎯 EOD TARGET
+  sheet.setColumnWidth(7, 165);   // ✅ HIT
+  sheet.setColumnWidth(8,  50);   // gap / chart spacer
   for (var c = 9; c <= totalCols; c++) {
     sheet.setColumnWidth(c, 80);
   }
@@ -211,32 +188,32 @@ function setupMorningBriefSheet(ss) {
   sheet.getRange(20, MBC.FLUSH_TARGET).setNote(
     "📉 FLUSH TARGET\n─────────────────────\n" +
     "AI's predicted flush level — where SPY might bottom\n" +
-    "during the morning trap (if Bear Trap setup).\n\n" +
+    "during the morning trap (Bear Trap setup).\n\n" +
     "Flat reference line on the chart.\n" +
-    "Marked ✅ in the HIT column when SPY comes within 0.15%."
+    "Marked ✅ when SPY comes within 0.15%."
   );
   sheet.getRange(20, MBC.FLIP_ZONE).setNote(
     "⚡ FLIP ZONE\n─────────────────────\n" +
-    "AI's predicted reversal zone — the price level where\n" +
-    "the morning flush is expected to find support and turn.\n\n" +
-    "This is the entry zone for calls in a Bear Trap setup."
+    "AI's predicted reversal zone — price level where\n" +
+    "the flush finds support and turns.\n\n" +
+    "Entry zone for calls in a Bear Trap setup."
   );
   sheet.getRange(20, MBC.RIP_TARGET).setNote(
     "🚀 RIP TARGET\n─────────────────────\n" +
-    "AI's predicted rip target — where SPY could run to\n" +
+    "AI's predicted rip target — where SPY could run\n" +
     "after the Bear Trap reversal plays out.\n\n" +
-    "Use this for call exit planning / profit target."
+    "Use for call exit planning / profit target."
   );
   sheet.getRange(20, MBC.EOD_TARGET).setNote(
     "🎯 EOD TARGET\n─────────────────────\n" +
     "AI's predicted SPY closing price for today.\n\n" +
-    "Graded at 3:00 CST — within 0.30% counts as a hit.\n" +
+    "Graded at 3:00 CST — within 0.30% = hit.\n" +
     "EOD accuracy tracked in the Scorecard."
   );
   sheet.getRange(20, MBC.HIT_FLAG).setNote(
     "✅ HIT\n─────────────────────\n" +
-    "Marked when SPY price comes within ±0.15% of any\n" +
-    "predicted target during that 5-minute tick.\n\n" +
+    "Marked when SPY comes within ±0.15% of any\n" +
+    "predicted target during that 5-min tick.\n\n" +
     "EOD grade: 3/4 targets hit = ✅ GOOD\n" +
     "           4/4 targets hit = 🎯 EXCELLENT"
   );
@@ -249,21 +226,20 @@ function setupMorningBriefSheet(ss) {
 // MENU ENTRY POINT
 // ─────────────────────────────────────────────────────────────
 function setupMorningBriefSheetFromMenu() {
-  var ss    = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = setupMorningBriefSheet(ss);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  setupMorningBriefSheet(ss);
   SpreadsheetApp.getUi().alert(
     "🌅 Morning Brief\n\n" +
-    "✅ Sheet created and ready!\n\n" +
+    "✅ Sheet rebuilt successfully!\n\n" +
     "HOW IT WORKS:\n" +
     "• Fires automatically at 8:25 CST (5 min before open)\n" +
-    "• Gemini analyzes overnight data and returns 4 price targets\n" +
-    "• Summary panel appears on 🪤 Bear Trap sheet too\n" +
+    "• Gemini analyzes overnight data → 4 price targets\n" +
+    "• Summary panel also written to 🪤 Bear Trap sheet\n" +
     "• Every 5-min tick tracks actual SPY vs predictions\n" +
     "• Targets marked ✅ when hit within ±0.15%\n" +
     "• Line chart plots actual price vs all target levels\n" +
     "• EOD grade fires at 3:00 CST\n\n" +
-    "AI BUDGET: 1 Gemini call at 8:25 CST\n" +
-    "Runs inside your existing 5-minute trigger.\n\n" +
-    "IMPORTANT: MB.CHART_DATA_START_ROW must be 21 in MorningBrief.gs"
+    "To test immediately: use menu → 🌅 Run Morning Brief Now\n\n" +
+    "⚠️  REMINDER: MB.CHART_DATA_START_ROW must be 21 in MorningBrief.gs"
   );
 }
