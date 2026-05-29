@@ -106,7 +106,7 @@ function logTick(data, now) {
   var vwapDisplay = (vwap > 0) ? vwap : "—";
   var vwapDiffPct = (vwap > 0) ? ((data.price - vwap) / vwap) * 100 : null;
 
-  var srZones = getTopSRZones(data, prevClose, dayOpenPrice);
+  var srZones = getTopSRZones(data, prevClose, dayOpenPrice) || { supports: [null, null], resistances: [null, null] };
 
   function formatZone(zone) {
     if (!zone) return "—";
