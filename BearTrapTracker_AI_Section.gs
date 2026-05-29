@@ -2,30 +2,32 @@
 // FILE: BearTrapTracker_AI_Section.gs
 // ============================================================
 //
-//  WHAT CHANGED — AI prompt enrichment update
-//  ──────────────────────────────────────────
-//  This file contains ONLY the functions that changed.
-//  Replace the matching functions in your existing
-//  BearTrapTracker.gs with these updated versions.
+//  TIER 2 OBSERVABILITY UPDATE
+//  ───────────────────────────
+//  This file contains the AI-call functions that live in your
+//  Bear Trap subsystem. Replace these three in your deployed
+//  BearTrapTracker code.
 //
-//  Changed functions:
-//    • getBearTrapAIMemo()     — output tokens 80 → 140
-//    • buildBearTrapPrompt()   — adds VWAP, S/R, session context
-//    • getEODAIMemo()          — adds scorecard comparison +
-//                                morning brief accuracy
-//
-//  Everything else in BearTrapTracker.gs is unchanged.
+//  Changes vs prior version:
+//    • Output tokens: 140 → 2000 (intraday memo)
+//                     220 → 2000 (EOD debrief)
+//    • shouldAllowAICall() before each fetch
+//    • recordAICall() on every success & failure path
+//    • Bear Trap & EOD are CRITICAL — never blocked by soft cap
 // ============================================================
 
 
 // ─────────────────────────────────────────────────────────────
-// AI MEMO — fires only when gate allows (see shouldFireAI)
-// Richer prompt: VWAP + S/R + historical context.
-// ~130 tokens in, 140 tokens out = ~270 tokens per call.
-// At 8 calls/day = ~2,160 tokens. Still well under free tier.
+// AI MEMO — fires only when shouldFireAI() allows
+// Critical feature: bypasses soft cap (only hard cap blocks it).
 // ─────────────────────────────────────────────────────────────
 function getBearTrapAIMemo(metrics, data, vixData, esData, cst) {
   try {
+    if (!shouldAllowAICall(AI_FEATURE.BEAR_TRAP)) {
+      Logger.log("BT: AI skipped by quota guard.");
+      return null;
+    }
+
     var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
     if (!apiKey) return "⚙️ Add GEMINI_API_KEY to enable AI memos.";
 
@@ -35,7 +37,7 @@ function getBearTrapAIMemo(metrics, data, vixData, esData, cst) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 140, temperature: 0.3 }
+      generationConfig: { maxOutputTokens: 2000, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -45,6 +47,7 @@ function getBearTrapAIMemo(metrics, data, vixData, esData, cst) {
 
     if (resp.getResponseCode() !== 200) {
       Logger.log("BT Gemini error: " + resp.getResponseCode());
+      recordAICall(AI_FEATURE.BEAR_TRAP, false);
       return null;
     }
 
@@ -57,10 +60,17 @@ function getBearTrapAIMemo(metrics, data, vixData, esData, cst) {
              ? json.candidates[0].content.parts[0].text.trim()
              : null;
 
-    return text ? "🤖 " + text : null;
+    if (text) {
+      recordAICall(AI_FEATURE.BEAR_TRAP, true);
+      return "🤖 " + text;
+    }
+
+    recordAICall(AI_FEATURE.BEAR_TRAP, false);
+    return null;
 
   } catch (e) {
     Logger.log("getBearTrapAIMemo ERROR: " + e.message);
+    recordAICall(AI_FEATURE.BEAR_TRAP, false);
     return null;
   }
 }
@@ -69,14 +79,12 @@ function getBearTrapAIMemo(metrics, data, vixData, esData, cst) {
 // ─────────────────────────────────────────────────────────────
 // BUILD BEAR TRAP PROMPT — enriched version
 //
-// Added vs old prompt:
+// Includes:
 //   • Price vs VWAP (distance + direction)
 //   • Nearest support (S1) and resistance (R1) from flags
 //   • Morning brief setup type + rationale
 //   • 20-day rolling win rate + pattern rate from scorecard
-//   • 2 sentences instead of 1 to use the extra output budget
-//
-// Token estimate: ~130 in, 140 out = ~270/call
+//   • Predicted flush target & flip zone (if set)
 // ─────────────────────────────────────────────────────────────
 function buildBearTrapPrompt(metrics, data, vixData, esData) {
   var overnightTagged = getFlag("BT_OVERNIGHT_TAGGED") === "YES";
@@ -125,28 +133,31 @@ function buildBearTrapPrompt(metrics, data, vixData, esData) {
 
 
 // ─────────────────────────────────────────────────────────────
-// EOD AI BRIEF — enriched version
+// EOD AI BRIEF — enriched debrief, one call per day at 3:00 pm cst
+// Critical feature: bypasses soft cap.
 //
-// Added vs old prompt:
+// Includes:
 //   • Morning brief accuracy (how many targets were hit)
 //   • Predicted vs actual flush depth comparison
 //   • Session high reached after flip
 //   • Rolling win rate trend from scorecard
-//   • 3-4 sentences to use the larger output budget
-//
-// Output tokens: 220 (up from 150) — still ~1 call/day
 // ─────────────────────────────────────────────────────────────
 function getEODAIMemo(ctx) {
   try {
+    if (!shouldAllowAICall(AI_FEATURE.BEAR_TRAP_EOD)) {
+      Logger.log("BT EOD: AI skipped by quota guard.");
+      return null;
+    }
+
     var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
     if (!apiKey) return null;
 
     // ── Morning brief accuracy data ───────────────────────────
-    var mbSetup    = getFlag("MB_SETUP_TYPE")   || "unknown";
-    var mbHits     = getFlag("MB_HITS")         || "0";
-    var mbTargets  = getFlag("MB_TOTAL_TARGETS") || "4";
-    var mbRipTarget = parseFloat(getFlag("MB_RIP_TARGET"))  || 0;
-    var mbEodTarget = parseFloat(getFlag("MB_EOD_TARGET"))  || 0;
+    var mbSetup       = getFlag("MB_SETUP_TYPE")               || "unknown";
+    var mbHits        = getFlag("MB_HITS")                     || "0";
+    var mbTargets     = getFlag("MB_TOTAL_TARGETS")            || "4";
+    var mbRipTarget   = parseFloat(getFlag("MB_RIP_TARGET"))   || 0;
+    var mbEodTarget   = parseFloat(getFlag("MB_EOD_TARGET"))   || 0;
     var mbFlushTarget = parseFloat(getFlag("MB_FLUSH_TARGET")) || 0;
 
     // ── Historical scorecard context ──────────────────────────
@@ -183,7 +194,7 @@ function getEODAIMemo(ctx) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 220, temperature: 0.4 }
+      generationConfig: { maxOutputTokens: 2000, temperature: 0.4 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -193,19 +204,30 @@ function getEODAIMemo(ctx) {
 
     if (resp.getResponseCode() !== 200) {
       Logger.log("EOD Gemini error: " + resp.getResponseCode());
+      recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
       return null;
     }
 
     var json = JSON.parse(resp.getContentText());
-    return json.candidates
-        && json.candidates[0]
-        && json.candidates[0].content
-        && json.candidates[0].content.parts
-        && json.candidates[0].content.parts[0]
-         ? "🤖 EOD: " + json.candidates[0].content.parts[0].text.trim()
-         : null;
+    var text = json.candidates
+            && json.candidates[0]
+            && json.candidates[0].content
+            && json.candidates[0].content.parts
+            && json.candidates[0].content.parts[0]
+             ? json.candidates[0].content.parts[0].text.trim()
+             : null;
+
+    if (text) {
+      recordAICall(AI_FEATURE.BEAR_TRAP_EOD, true);
+      return "🤖 EOD: " + text;
+    }
+
+    recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
+    return null;
+
   } catch (e) {
     Logger.log("getEODAIMemo ERROR: " + e.message);
+    recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
     return null;
   }
 }

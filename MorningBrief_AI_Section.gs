@@ -2,35 +2,34 @@
 // FILE: MorningBrief_AI_Section.gs
 // ============================================================
 //
-//  WHAT CHANGED — AI prompt enrichment update
-//  ──────────────────────────────────────────
-//  This file contains ONLY the function that changed.
-//  Replace callGeminiForBrief() in your existing
-//  MorningBrief.gs with this updated version.
+//  TIER 2 OBSERVABILITY UPDATE
+//  ───────────────────────────
+//  This file contains the pre-market Gemini call. Replace
+//  callGeminiForBrief() in your deployed MorningBrief code.
 //
-//  Changed:
-//    • callGeminiForBrief() — adds rolling scorecard history,
-//      VWAP from previous session, and recent pattern streak
-//      to give Gemini meaningful prior context for price targets.
-//    • Output tokens: 150 → 200 (allows richer rationale).
+//  Changes vs prior version:
+//    • Output tokens 200 → 2500 (was the worst truncation
+//      offender — JSON brief was getting cut off mid-rationale)
+//    • shouldAllowAICall() before fetch
+//    • recordAICall() on every success & failure path
+//    • Morning Brief is CRITICAL — never blocked by soft cap
 // ============================================================
 
 
 // ─────────────────────────────────────────────────────────────
-// MORNING BRIEF — enriched Gemini call
+// MORNING BRIEF — pre-market Gemini call (1×/day at 8:25 am cst)
+// Critical feature: bypasses soft cap.
 //
-// Added vs old version:
-//   • 20-day rolling win rate + pattern rate from scorecard
-//   • Most common recent setup type (from flags)
-//   • Whether OH tagging has been predictive lately
-//   • Prev session close vs open result (was yesterday a trap?)
-//   • Output bumped to 200 tokens for a fuller rationale field
-//
-// Token estimate: ~180 in, 200 out = ~380/call (1 call/day)
+// Token estimate: ~180 in, ~250 typical out (cap 2500)
 // ─────────────────────────────────────────────────────────────
 function callGeminiForBrief(price, prevClose, ohigh, olow, pmClose,
                              gapPct, vixData, esData, ohTagged, preConf) {
   try {
+    if (!shouldAllowAICall(AI_FEATURE.MORNING_BRIEF)) {
+      Logger.log("MB: AI skipped by quota guard.");
+      return null;
+    }
+
     var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
     if (!apiKey) {
       Logger.log("MB: No GEMINI_API_KEY");
@@ -85,7 +84,7 @@ function callGeminiForBrief(price, prevClose, ohigh, olow, pmClose,
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 200, temperature: 0.2 }
+      generationConfig: { maxOutputTokens: 2500, temperature: 0.2 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -95,6 +94,7 @@ function callGeminiForBrief(price, prevClose, ohigh, olow, pmClose,
 
     if (resp.getResponseCode() !== 200) {
       Logger.log("MB Gemini error: " + resp.getResponseCode() + " — " + resp.getContentText().substring(0, 200));
+      recordAICall(AI_FEATURE.MORNING_BRIEF, false);
       return null;
     }
 
@@ -109,6 +109,7 @@ function callGeminiForBrief(price, prevClose, ohigh, olow, pmClose,
 
     if (!raw) {
       Logger.log("MB: Gemini returned empty content.");
+      recordAICall(AI_FEATURE.MORNING_BRIEF, false);
       return null;
     }
 
@@ -123,6 +124,7 @@ function callGeminiForBrief(price, prevClose, ohigh, olow, pmClose,
       // Validate required fields
       if (!parsed.setupType || parsed.eodTarget === undefined) {
         Logger.log("MB: JSON missing required fields — " + clean);
+        recordAICall(AI_FEATURE.MORNING_BRIEF, false);
         return null;
       }
 
@@ -136,39 +138,35 @@ function callGeminiForBrief(price, prevClose, ohigh, olow, pmClose,
       parsed.setupType = setupLabels[parsed.setupType] || parsed.setupType;
 
       Logger.log("MB parsed: " + JSON.stringify(parsed));
+      recordAICall(AI_FEATURE.MORNING_BRIEF, true);
       return parsed;
 
     } catch (parseErr) {
       Logger.log("MB JSON parse error: " + parseErr.message + " raw=" + clean);
+      recordAICall(AI_FEATURE.MORNING_BRIEF, false);
       return null;
     }
 
   } catch (e) {
     Logger.log("callGeminiForBrief ERROR: " + e.message);
+    recordAICall(AI_FEATURE.MORNING_BRIEF, false);
     return null;
   }
 }
 
 
 // ─────────────────────────────────────────────────────────────
-// INTEGRATION NOTE — two small additions needed in other files
-// ─────────────────────────────────────────────────────────────
+// INTEGRATION NOTES — these two flag-writes still required
+// elsewhere in your code (carried over from prior version):
 //
-// 1. In Logger.gs, inside logTick(), after computing S/R zones,
-//    add these two lines to cache the nearest levels as flags
-//    so buildBearTrapPrompt() and buildPrompt() can read them:
+// 1. Logger.gs, inside logTick(), after computing S/R:
+//      setFlag("SESSION_LAST_S1", formatZone(srZones.supports[0]));
+//      setFlag("SESSION_LAST_R1", formatZone(srZones.resistances[0]));
 //
-//      if (srZones.supports[0])    setFlag("SESSION_LAST_S1", formatZone(srZones.supports[0]));
-//      if (srZones.resistances[0]) setFlag("SESSION_LAST_R1", formatZone(srZones.resistances[0]));
-//
-// 2. In Scorecard.gs, at the end of updateScorecardStats(),
-//    add this call to cache the rolling stats for AI context:
-//
+// 2. Scorecard.gs end of updateScorecardStats():
 //      cacheSessionContextFlags(winRate, windowWinRate, patternRate, dataRows);
 //
-//    Also add this to logToScorecard() just before resetDailyBearTrapFlags()
-//    so tomorrow's morning brief knows yesterday's result:
-//
+//    And in logToScorecard() before resetDailyBearTrapFlags():
 //      setFlag("SC_LAST_GRADE", grade);
 //      setFlag("SC_LAST_CLOSE_VS_OPEN", closeVsOpen.toFixed(2) + "%");
 // ─────────────────────────────────────────────────────────────

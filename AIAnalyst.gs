@@ -1,13 +1,19 @@
 // ============================================================
 // FILE: AIAnalyst.gs
 // PURPOSE: Calls Gemini 2.5 Flash (free tier) for large moves.
-//          Now includes richer session context in every prompt:
+//          Includes richer session context in every prompt:
 //          VWAP distance, S/R levels, and rolling scorecard stats.
 //
 //  SETUP: Add your key in Apps Script →
 //         Project Settings → Script Properties
 //         Property name: GEMINI_API_KEY
 //         Get free key: https://aistudio.google.com/app/apikey
+//
+//  TIER 2 OBSERVABILITY (this update):
+//    • Output tokens 160 → 2000 (matches "≥2000" rule)
+//    • shouldAllowAICall() — skipped under soft-cap quota guard
+//    • recordAICall() — health tracking on both success & failure
+//    • Feature classified as NON-CRITICAL (cuts at 200/day)
 // ============================================================
 
 var GEMINI_MODEL    = "gemini-2.5-flash";
@@ -15,14 +21,12 @@ var GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/"
                     + GEMINI_MODEL + ":generateContent";
 
 // ─────────────────────────────────────────────────────────────
-// TOKEN BUDGET
-// ~120 tokens in (up from ~40), 160 tokens out (up from 120).
-// Still ~280 tokens/call — well under free tier.
+// TOKEN BUDGET — bumped per "≥2000 for most prompts" rule
 // ─────────────────────────────────────────────────────────────
-var GEMINI_MAX_OUTPUT_TOKENS = 160;
+var GEMINI_MAX_OUTPUT_TOKENS = 2000;
 
 // ─────────────────────────────────────────────────────────────
-// COOLDOWN — minimum minutes between AI calls
+// COOLDOWN — minimum minutes between large-move AI calls
 // ─────────────────────────────────────────────────────────────
 var AI_COOLDOWN_MINUTES = 15;
 
@@ -34,6 +38,12 @@ function getAIMemo(data, pctChange, tickChange, trendStr, now) {
     // ── Cooldown check ────────────────────────────────────────
     if (!isAICooldownClear(now)) {
       Logger.log("AI cooldown active — skipping memo.");
+      return null;
+    }
+
+    // ── Quota guard (Tier 2) ──────────────────────────────────
+    if (!shouldAllowAICall(AI_FEATURE.LARGE_MOVE)) {
+      Logger.log("AI: Large-move skipped by quota guard.");
       return null;
     }
 
@@ -70,6 +80,7 @@ function getAIMemo(data, pctChange, tickChange, trendStr, now) {
 
     if (code !== 200) {
       Logger.log("Gemini error: " + resp.getContentText().substring(0, 200));
+      recordAICall(AI_FEATURE.LARGE_MOVE, false);
       return null;
     }
 
@@ -84,12 +95,16 @@ function getAIMemo(data, pctChange, tickChange, trendStr, now) {
 
     if (text) {
       setFlag("LAST_AI_CALL_TIME", now.getTime().toString());
+      recordAICall(AI_FEATURE.LARGE_MOVE, true);
       return "🤖 " + text;
     }
+
+    recordAICall(AI_FEATURE.LARGE_MOVE, false);
     return null;
 
   } catch (e) {
     Logger.log("getAIMemo ERROR: " + e.message);
+    recordAICall(AI_FEATURE.LARGE_MOVE, false);
     return null;
   }
 }
@@ -130,35 +145,34 @@ function buildPrompt(data, pctChange, tickChange, trendStr) {
 function isAICooldownClear(now) {
   var lastStr = getFlag("LAST_AI_CALL_TIME");
   if (!lastStr || lastStr === "") return true;
-  var last    = parseInt(lastStr);
+  var last = parseInt(lastStr);
   if (isNaN(last)) return true;
   return (now.getTime() - last) / 60000 >= AI_COOLDOWN_MINUTES;
 }
 
 // ─────────────────────────────────────────────────────────────
-// BUILD SESSION CONTEXT — shared helper used by all three AI
-// prompt builders. Pulls rolling scorecard stats and intraday
-// session state from flags. Kept compact: ~40-50 extra tokens.
+// BUILD SESSION CONTEXT — shared helper used by all AI prompt
+// builders. Pulls rolling scorecard stats + intraday session
+// state from flags. Kept compact: ~40-50 extra tokens.
 //
 // IMPORTANT: Logger.gs must call setFlag("SESSION_LAST_S1", ...)
 //            and setFlag("SESSION_LAST_R1", ...) each tick so
 //            this function always has fresh S/R data to read.
-//            See Logger.gs integration note below.
 // ─────────────────────────────────────────────────────────────
 function buildSessionContext() {
   try {
-    var winRate    = getFlag("SC_ROLLING_WIN_RATE")     || "?";
-    var patRate    = getFlag("SC_ROLLING_PATTERN_RATE") || "?";
-    var totalDays  = getFlag("SC_TOTAL_DAYS")           || "?";
-    var mbSetup    = getFlag("MB_SETUP_TYPE")           || "unknown";
-    var mbRationale = getFlag("MB_RATIONALE")           || "";
+    var winRate     = getFlag("SC_ROLLING_WIN_RATE")     || "?";
+    var patRate     = getFlag("SC_ROLLING_PATTERN_RATE") || "?";
+    var totalDays   = getFlag("SC_TOTAL_DAYS")           || "?";
+    var mbSetup     = getFlag("MB_SETUP_TYPE")           || "unknown";
+    var mbRationale = getFlag("MB_RATIONALE")            || "";
 
     var parts = [];
-    if (winRate !== "?")   parts.push("20d win rate: " + winRate + "%");
-    if (patRate !== "?")   parts.push("pattern rate: " + patRate + "%");
-    if (totalDays !== "?") parts.push("days tracked: " + totalDays);
+    if (winRate !== "?")       parts.push("20d win rate: " + winRate + "%");
+    if (patRate !== "?")       parts.push("pattern rate: " + patRate + "%");
+    if (totalDays !== "?")     parts.push("days tracked: " + totalDays);
     if (mbSetup !== "unknown") parts.push("morning setup: " + mbSetup);
-    if (mbRationale)       parts.push("brief: " + mbRationale);
+    if (mbRationale)           parts.push("brief: " + mbRationale);
 
     return parts.length > 0 ? "Historical context: " + parts.join(" | ") + "." : "";
   } catch (e) {
@@ -168,9 +182,9 @@ function buildSessionContext() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// SCORECARD CONTEXT REFRESH — call this from updateScorecardStats()
-// in Scorecard.gs after stats are recalculated, to cache the
-// rolling numbers as flags for buildSessionContext() to read.
+// SCORECARD CONTEXT CACHE — call from updateScorecardStats()
+// in Scorecard.gs after stats recalc, to cache rolling numbers
+// as flags for buildSessionContext() to read.
 //
 // Add this call at the end of updateScorecardStats():
 //   cacheSessionContextFlags(winRate, windowWinRate, patternRate, dataRows);
