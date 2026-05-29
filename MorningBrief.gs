@@ -18,7 +18,7 @@ var MB = {
   EOD_MIN:           0,
   EOD_WINDOW_MIN:    10,
   HIT_TOLERANCE_PCT: 0.15,
-  CHART_DATA_START_ROW: 20,
+  CHART_DATA_START_ROW: 21,   // ← was 20; setup places header at row 20, data starts row 21
   SETUP_BEAR_TRAP: "🪤 BEAR TRAP",
   SETUP_BULL:      "📈 BULL DAY",
   SETUP_CHOPPY:    "↔️ CHOPPY",
