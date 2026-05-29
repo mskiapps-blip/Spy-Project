@@ -252,7 +252,7 @@ function generateForecast(sheet, data, now) {
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        maxOutputTokens: 400,
+        maxOutputTokens: 1200,
         temperature: 0.3
       }
     });
