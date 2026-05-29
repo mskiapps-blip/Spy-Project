@@ -84,7 +84,7 @@ var DB = {
 //  gap  L-card  gap  R-card  gap  wide   gap  end
 //   1     2      3     4      5    6      7    8
 // ─────────────────────────────────────────────────────────────
-var COL = {
+var DC = {
   GAP_L:   1,   // 8px gap
   CARD_L:  2,   // 310px — left card
   GAP_M:   3,   // 8px gap
@@ -206,7 +206,7 @@ function runDashboardTick(data, now) {
 function writeCardHeader(sheet, row, col, label, bgColor, txtColor, isWide) {
   var span = isWide ? 5 : 1; // wide = cols 2-6, normal = single col
   if (isWide) {
-    sheet.getRange(row, COL.CARD_L, 1, 5).merge()
+    sheet.getRange(row, DC.CARD_L, 1, 5).merge()
       .setValue(label).setBackground(bgColor).setFontColor(txtColor)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
@@ -246,7 +246,7 @@ function writeSPYCard(sheet, data, cst) {
     var arrow     = isUp ? "▲" : "▼";
     var sign      = isUp ? "+" : "";
 
-    var col = COL.CARD_L;
+    var col = DC.CARD_L;
 
     // Header
     sheet.getRange(DR.SPY_HDR, col).setValue("  💰  SPY — LAST PRICE")
@@ -307,7 +307,7 @@ function writeSPYCard(sheet, data, cst) {
 function writeMarketCard(sheet, cstMins, dow) {
   try {
     var s   = getMarketStatus(cstMins, dow);
-    var col = COL.CARD_R;
+    var col = DC.CARD_R;
 
     // Header
     sheet.getRange(DR.SPY_HDR, col).setValue("  🏛️  MARKET STATUS")
@@ -353,7 +353,7 @@ function writeMarketCard(sheet, cstMins, dow) {
 function writeAICard(sheet, cstMins, dow) {
   try {
     var ai  = getAIStatus(cstMins, dow);
-    var col = COL.CARD_L;
+    var col = DC.CARD_L;
 
     sheet.getRange(DR.AI_HDR, col).setValue("  🤖  AI SYSTEM STATUS")
       .setBackground(DB.HDR_AI).setFontColor(DB.TXT_HDR_AI)
@@ -394,7 +394,7 @@ function writeAICard(sheet, cstMins, dow) {
 function writeESCard(sheet, esData) {
   try {
     var al  = getESAlignmentStatus(esData);
-    var col = COL.CARD_R;
+    var col = DC.CARD_R;
 
     var esPrice = esData ? "$" + esData.price.toFixed(2) : "—";
     var esChg   = esData ? (esData.changePct >= 0 ? "+" : "") + esData.changePct.toFixed(2) + "%" : "—";
@@ -440,7 +440,7 @@ function writeESDetailCard(sheet, esData) {
     var al = getESAlignmentStatus(esData);
 
     // Header (wide)
-    sheet.getRange(DR.ES_HDR, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.ES_HDR, DC.CARD_L, 1, 3).merge()
       .setValue("  🎯  BEAR TRAP ALIGNMENT — FULL ANALYSIS")
       .setBackground(DB.HDR_ES).setFontColor(DB.TXT_HDR_ES)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
@@ -448,7 +448,7 @@ function writeESDetailCard(sheet, esData) {
     sheet.setRowHeight(DR.ES_HDR, 28);
 
     // Alignment label
-    sheet.getRange(DR.ES_PRICE, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.ES_PRICE, DC.CARD_L, 1, 3).merge()
       .setValue(al.label)
       .setBackground(DB.BG_CARD).setFontColor(al.color)
       .setFontSize(15).setFontWeight("bold")
@@ -456,7 +456,7 @@ function writeESDetailCard(sheet, esData) {
     sheet.setRowHeight(DR.ES_PRICE, 32);
 
     // Signal reason
-    sheet.getRange(DR.ES_ALIGN, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.ES_ALIGN, DC.CARD_L, 1, 3).merge()
       .setValue("SIGNAL:  " + al.reason)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
       .setFontSize(9).setWrap(true)
@@ -464,12 +464,12 @@ function writeESDetailCard(sheet, esData) {
     sheet.setRowHeight(DR.ES_ALIGN, 40);
 
     // Divider
-    sheet.getRange(DR.ES_DIV, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.ES_DIV, DC.CARD_L, 1, 3).merge()
       .setValue("").setBackground(DB.BG_DIVIDER);
     sheet.setRowHeight(DR.ES_DIV, 2);
 
     // Playbook
-    sheet.getRange(DR.ES_SIGNAL, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.ES_SIGNAL, DC.CARD_L, 1, 3).merge()
       .setValue("PLAYBOOK:  " + al.action)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
       .setFontSize(9).setFontWeight("bold").setWrap(true)
@@ -477,16 +477,16 @@ function writeESDetailCard(sheet, esData) {
     sheet.setRowHeight(DR.ES_SIGNAL, 36);
 
     // Padding
-    sheet.getRange(DR.ES_ACTION, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.ES_ACTION, DC.CARD_L, 1, 3).merge()
       .setValue("").setBackground(DB.BG_CARD);
     sheet.setRowHeight(DR.ES_ACTION, 8);
 
     // Fill gap cols for this section
     for (var r = DR.ES_HDR; r <= DR.ES_ACTION; r++) {
-      sheet.getRange(r, COL.GAP_L).setBackground(DB.BG_GAP);
-      sheet.getRange(r, COL.GAP_M).setBackground(DB.BG_GAP);
-      sheet.getRange(r, COL.GAP_R).setBackground(DB.BG_GAP);
-      sheet.getRange(r, COL.GAP_END).setBackground(DB.BG_GAP);
+      sheet.getRange(r, DC.GAP_L).setBackground(DB.BG_GAP);
+      sheet.getRange(r, DC.GAP_M).setBackground(DB.BG_GAP);
+      sheet.getRange(r, DC.GAP_R).setBackground(DB.BG_GAP);
+      sheet.getRange(r, DC.GAP_END).setBackground(DB.BG_GAP);
     }
 
   } catch (e) { Logger.log("writeESDetailCard ERROR: " + e.message); }
@@ -520,7 +520,7 @@ function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldB
     var postedStr = briefTime ? briefTime + " cst" : "—";
 
     // Header
-    sheet.getRange(DR.BR_HDR, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.BR_HDR, DC.CARD_L, 1, 3).merge()
       .setValue("  🧠  AI MISSION BRIEFING")
       .setBackground(DB.HDR_BRIEF).setFontColor(DB.TXT_HDR_BRIEF)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
@@ -528,14 +528,14 @@ function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldB
     sheet.setRowHeight(DR.BR_HDR, 28);
 
     // Meta row — posted + next
-    sheet.getRange(DR.BR_META, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.BR_META, DC.CARD_L, 1, 3).merge()
       .setValue("posted  " + postedStr + "          next update  " + nextBriefStr)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
       .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.BR_META, 22);
 
     // Big terminal text
-    sheet.getRange(DR.BR_TEXT, COL.CARD_L, 8, 3).merge()
+    sheet.getRange(DR.BR_TEXT, DC.CARD_L, 8, 3).merge()
       .setValue(briefText)
       .setBackground(DB.BG_TERM).setFontColor(DB.TXT_TERM)
       .setFontSize(11).setFontFamily("Roboto Mono")
@@ -546,17 +546,17 @@ function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldB
     }
 
     // Padding
-    sheet.getRange(DR.BR_PAD, COL.CARD_L, 1, 3).merge()
+    sheet.getRange(DR.BR_PAD, DC.CARD_L, 1, 3).merge()
       .setValue("").setBackground(DB.BG_CARD);
     sheet.setRowHeight(DR.BR_PAD, 10);
 
     // Fill gap cols
     for (var rb = DR.BR_HDR; rb <= DR.BR_PAD; rb++) {
-      sheet.getRange(rb, COL.GAP_L).setBackground(DB.BG_GAP);
-      sheet.getRange(rb, COL.GAP_M).setBackground(DB.BG_GAP);
-      sheet.getRange(rb, COL.GAP_R).setBackground(DB.BG_GAP);
-      if (sheet.getMaxColumns() >= COL.GAP_END) {
-        sheet.getRange(rb, COL.GAP_END).setBackground(DB.BG_GAP);
+      sheet.getRange(rb, DC.GAP_L).setBackground(DB.BG_GAP);
+      sheet.getRange(rb, DC.GAP_M).setBackground(DB.BG_GAP);
+      sheet.getRange(rb, DC.GAP_R).setBackground(DB.BG_GAP);
+      if (sheet.getMaxColumns() >= DC.GAP_END) {
+        sheet.getRange(rb, DC.GAP_END).setBackground(DB.BG_GAP);
       }
     }
 
@@ -881,13 +881,13 @@ function setupDashboardSheet(ss) {
   while (sheet.getMaxColumns() < 7) sheet.insertColumnAfter(sheet.getMaxColumns());
 
   // ── Column widths ─────────────────────────────────────────
-  sheet.setColumnWidth(COL.GAP_L,  10);   // gap
-  sheet.setColumnWidth(COL.CARD_L, 310);  // left card
-  sheet.setColumnWidth(COL.GAP_M,  10);   // gap
-  sheet.setColumnWidth(COL.CARD_R, 310);  // right card
-  sheet.setColumnWidth(COL.GAP_R,  10);   // gap
-  sheet.setColumnWidth(COL.WIDE,   10);   // unused — right end cap
-  sheet.setColumnWidth(COL.GAP_END, 10);  // end
+  sheet.setColumnWidth(DC.GAP_L,  10);   // gap
+  sheet.setColumnWidth(DC.CARD_L, 310);  // left card
+  sheet.setColumnWidth(DC.GAP_M,  10);   // gap
+  sheet.setColumnWidth(DC.CARD_R, 310);  // right card
+  sheet.setColumnWidth(DC.GAP_R,  10);   // gap
+  sheet.setColumnWidth(DC.WIDE,   10);   // unused — right end cap
+  sheet.setColumnWidth(DC.GAP_END, 10);  // end
 
   // ── Flood entire sheet with base bg ──────────────────────
   sheet.getRange(1, 1, 50, 7).setBackground(DB.BG_SHEET);
@@ -926,11 +926,11 @@ function setupDashboardSheet(ss) {
 
   for (var i = 0; i < cardRows.length; i++) {
     var rr = cardRows[i];
-    sheet.getRange(rr, COL.GAP_L).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, COL.GAP_M).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, COL.GAP_R).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, COL.WIDE).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, COL.GAP_END).setBackground(DB.BG_SHEET);
+    sheet.getRange(rr, DC.GAP_L).setBackground(DB.BG_SHEET);
+    sheet.getRange(rr, DC.GAP_M).setBackground(DB.BG_SHEET);
+    sheet.getRange(rr, DC.GAP_R).setBackground(DB.BG_SHEET);
+    sheet.getRange(rr, DC.WIDE).setBackground(DB.BG_SHEET);
+    sheet.getRange(rr, DC.GAP_END).setBackground(DB.BG_SHEET);
   }
 
   // ── Gap rows between card rows ───────────────────────────
