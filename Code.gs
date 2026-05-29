@@ -270,6 +270,7 @@ function onOpen() {
     .addSeparator()
     .addItem("⏰  Install 5-Min Trigger",         "installTrigger")
     .addItem("🛑  Remove All Triggers",           "removeAllTriggers")
+    .addItem("🤖  Show AI Health",  "showAIHealthFromMenu")
     .addToUi();
 }
 
