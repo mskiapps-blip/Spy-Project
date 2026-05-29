@@ -372,20 +372,16 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
     "ES Futures: " + esStr + "\n\n" +
     (mbStr ? "=== MORNING BRIEF CONTEXT ===\n" + mbStr + "\n" : "") +
     (recentContext ? "=== RECENT PRICE ACTION (last 12 ticks) ===\n" + recentContext + "\n\n" : "") +
-    "=== INSTRUCTIONS ===\n" +
-    "Generate a full-day SPY price forecast for all 13 thirty-minute session slots: " + slotLabels + ".\n" +
-    "For slots that have already passed, use the actual price data above as your anchor.\n" +
-    "For future slots, project the most likely SPY price at that 30-min mark.\n" +
-    "Assign a confidence score 1–10 for each slot (10 = very confident).\n" +
-    "Confidence should be lower for slots far in the future.\n" +
-    "Include a brief 5-10 word memo per slot explaining the key driver.\n\n" +
-    "Return ONLY this exact JSON, no markdown, no backticks, no extra text:\n" +
-    '{"slots":[' +
-    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"brief note"},' +
-    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"brief note"},' +
-    '...repeat for all 13 slots...' +
-    "]}\n\n" +
-    "All 13 slots required: " + slotLabels;
+"=== INSTRUCTIONS ===\n" +
+"Generate a full-day SPY price forecast for all 13 slots: " + slotLabels + ".\n" +
+"STRICT RULES — you MUST follow these exactly:\n" +
+"  1. Return ONLY raw JSON, no markdown, no backticks, no extra text.\n" +
+"  2. Every memo MUST be 8 words or less. Examples: 'gap holds', 'profit taking', 'VWAP test', 'fades lower'.\n" +
+"  3. All 13 slots required, no exceptions.\n" +
+"  4. Price to 2 decimal places, conf is integer 1-10.\n\n" +
+"Return this exact structure:\n" +
+'{"slots":[{"time":"8:30 AM","price":0.00,"conf":5,"memo":"8 words"},{"time":"9:00 AM","price":0.00,"conf":5,"memo":"8 words"},{"time":"9:30 AM","price":0.00,"conf":5,"memo":"8 words"},{"time":"10:00 AM","price":0.00,"conf":5,"memo":"8 words"},{"time":"10:30 AM","price":0.00,"conf":5,"memo":"8 words"},{"time":"11:00 AM","price":0.00,"conf":5,"memo":"8 words"},{"time":"11:30 AM","price":0.00,"conf":5,"memo":"8 words"},{"time":"12:00 PM","price":0.00,"conf":5,"memo":"8 words"},{"time":"12:30 PM","price":0.00,"conf":5,"memo":"8 words"},{"time":"1:00 PM","price":0.00,"conf":5,"memo":"8 words"},{"time":"1:30 PM","price":0.00,"conf":5,"memo":"8 words"},{"time":"2:00 PM","price":0.00,"conf":5,"memo":"8 words"},{"time":"3:00 PM","price":0.00,"conf":5,"memo":"8 words"}]}' +
+"\n\nAll 13 slots required: " + slotLabels;
 
   return prompt;
 }
