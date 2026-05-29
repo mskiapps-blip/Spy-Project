@@ -159,7 +159,7 @@ function generateMorningBrief(sheet, data, now, todayStr) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 250, temperature: 0.3 }
+      generationConfig: { maxOutputTokens: 2500, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
