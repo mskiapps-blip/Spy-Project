@@ -206,27 +206,3 @@ function updateRollingAvgTick(absTickChange) {
   setFlag("TICK_COUNT",    count);
   return newAvg;
 }
-
-// ─────────────────────────────────────────────────────────────
-// FINALIZE DAY SUMMARY — called at market close
-// ─────────────────────────────────────────────────────────────
-function finalizeDaySummary() {
-  var ss  = SpreadsheetApp.getActiveSpreadsheet();
-  var log = ss.getSheetByName(SHEET_LOG);
-  if (!log || log.getLastRow() < 2) return;
-
-  log.appendRow(["── DAY CLOSE ──", "", "", "", "", "", "", "", "", "", "", "", "", "", "Session ended.", ""]);
-  var lastRow = log.getLastRow();
-  log.getRange(lastRow, 1, 1, HEADERS.length)
-     .setBackground("#1a1a3e")
-     .setFontColor("#9c9ccc")
-     .setFontStyle("italic")
-     .setFontSize(9);
-
-  setFlag("DAY_OPEN_PRICE", "");
-  setFlag("PREV_PRICE",     "");
-  setFlag("AVG_TICK_SIZE",  "");
-  setFlag("TICK_COUNT",     "");
-  setFlag("PRICE_HISTORY",  "");
-  Logger.log("Day summary row written.");
-}
