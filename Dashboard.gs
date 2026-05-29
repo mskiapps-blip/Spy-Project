@@ -3,6 +3,12 @@
 // PURPOSE: 🖥️ MISSION CONTROL — Card-grid dashboard.
 //
 //  All times CST 12-hour format.
+//
+//  CARD LAYOUT:
+//    Row 1 (SPY rows 4–10):   CARD_L = SPY Price   | CARD_R = Market Status
+//    Row 2 (AI  rows 12–17):  CARD_L = AI Status   | CARD_R = (blank right)
+//    Row 3 (ES  rows 19–25):  CARD_L = VIX         | CARD_R = ES Futures
+//    Row 4 (BR  rows 27–37):  full-width AI Briefing
 // ============================================================
 
 var SHEET_DASHBOARD = "🖥️ DASHBOARD";
@@ -22,11 +28,13 @@ var DB = {
   HDR_MKT:      "#002918",
   HDR_AI:       "#1a0a30",
   HDR_ES:       "#2a1800",
+  HDR_VIX:      "#001a2a",
   HDR_BRIEF:    "#1e0a00",
   TXT_HDR_SPY:  "#29b6f6",
   TXT_HDR_MKT:  "#4caf50",
   TXT_HDR_AI:   "#ab47bc",
   TXT_HDR_ES:   "#ffa726",
+  TXT_HDR_VIX:  "#4dd0e1",
   TXT_HDR_BRIEF:"#ff7043",
   ACC_SPY:      "#0077bb",
   ACC_MKT:      "#005533",
@@ -150,7 +158,8 @@ function runDashboardTick(data, now) {
     writeSPYCard(sheet, data, now);
     writeMarketCard(sheet, cstMins, dow);
     writeAICard(sheet, cstMins, dow);
-    writeESCard(sheet, esData);
+    writeVIXCard(sheet, vixData);   // ← CARD_L at ES rows (was blank/stale)
+    writeESCard(sheet, esData);     // ← CARD_R at ES rows
     writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldBrief);
 
     // Subtitle — Utilities.formatDate works correctly on raw UTC Date
@@ -338,7 +347,93 @@ function writeAICard(sheet, cstMins, dow) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 4 — ES FUTURES
+// CARD 4a — VIX  (CARD_L at ES rows 19–25)
+// This card was missing — its absence left stale content in
+// CARD_L at these rows, causing the phantom "second ES box".
+// ─────────────────────────────────────────────────────────────
+function writeVIXCard(sheet, vixData) {
+  try {
+    var col = DC.CARD_L;
+
+    sheet.getRange(DR.ES_HDR, col).setValue("  📊  VIX — VOLATILITY")
+      .setBackground(DB.HDR_VIX).setFontColor(DB.TXT_HDR_VIX)
+      .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_HDR, 28);
+
+    if (!vixData) {
+      sheet.getRange(DR.ES_PRICE, col).setValue("—")
+        .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+        .setFontSize(20).setFontWeight("bold").setHorizontalAlignment("left").setVerticalAlignment("middle");
+      sheet.setRowHeight(DR.ES_PRICE, 44);
+      sheet.getRange(DR.ES_ALIGN, col).setValue("No VIX data")
+        .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+        .setFontSize(10).setHorizontalAlignment("left").setVerticalAlignment("middle");
+      sheet.setRowHeight(DR.ES_ALIGN, 24);
+      sheet.getRange(DR.ES_DIV,    col).setValue("").setBackground(DB.BG_DIVIDER); sheet.setRowHeight(DR.ES_DIV, 2);
+      sheet.getRange(DR.ES_SIGNAL, col).setValue("").setBackground(DB.BG_CARD).setFontSize(9).setFontColor(DB.TXT_DIM).setHorizontalAlignment("left").setVerticalAlignment("middle"); sheet.setRowHeight(DR.ES_SIGNAL, 22);
+      sheet.getRange(DR.ES_ACTION, col).setValue("").setBackground(DB.BG_CARD).setFontSize(8).setFontColor(DB.TXT_DIM).setHorizontalAlignment("left").setVerticalAlignment("middle"); sheet.setRowHeight(DR.ES_ACTION, 18);
+      sheet.getRange(DR.ES_PAD,    col).setValue("").setBackground(DB.BG_CARD); sheet.setRowHeight(DR.ES_PAD, 10);
+      return;
+    }
+
+    // VIX price color: green = low/normal, gold = elevated, red = fear
+    var vixColor = vixData.regime === "LOW"      ? DB.TXT_GREEN
+                 : vixData.regime === "NORMAL"   ? DB.TXT_CYAN
+                 : vixData.regime === "ELEVATED" ? DB.TXT_ORANGE
+                 : DB.TXT_RED;  // FEAR
+
+    // Change color
+    var chgColor = vixData.change >= 0 ? DB.TXT_RED : DB.TXT_GREEN;  // VIX up = bad (red), down = good (green)
+    var chgSign  = vixData.change >= 0 ? "+" : "";
+
+    // Regime description
+    var regimeDesc = vixData.regime === "LOW"      ? "🟢 Low Volatility — calm market"
+                   : vixData.regime === "NORMAL"   ? "🔵 Normal Volatility"
+                   : vixData.regime === "ELEVATED" ? "🟡 Elevated — exercise caution"
+                   : "🔴 FEAR — high volatility environment";
+
+    // Trader action hint
+    var regimeAction = vixData.regime === "LOW"      ? "Spreads tight. Momentum plays favored."
+                     : vixData.regime === "NORMAL"   ? "Standard risk management applies."
+                     : vixData.regime === "ELEVATED" ? "⚠️ Widen stops. Reduce size."
+                     : "❌ Extreme caution. Whipsaw risk high.";
+
+    sheet.getRange(DR.ES_PRICE, col).setValue(vixData.price.toFixed(2))
+      .setBackground(DB.BG_CARD).setFontColor(vixColor)
+      .setFontSize(20).setFontWeight("bold").setFontFamily("Roboto Mono")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_PRICE, 44);
+
+    sheet.getRange(DR.ES_ALIGN, col)
+      .setValue(chgSign + vixData.change.toFixed(2) + "  ·  prev close  " + vixData.prevClose.toFixed(2))
+      .setBackground(DB.BG_CARD).setFontColor(chgColor)
+      .setFontSize(11).setFontWeight("bold")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_ALIGN, 24);
+
+    sheet.getRange(DR.ES_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
+    sheet.setRowHeight(DR.ES_DIV, 2);
+
+    sheet.getRange(DR.ES_SIGNAL, col).setValue(regimeDesc)
+      .setBackground(DB.BG_CARD).setFontColor(vixColor)
+      .setFontSize(10).setFontWeight("bold")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_SIGNAL, 22);
+
+    sheet.getRange(DR.ES_ACTION, col).setValue(regimeAction)
+      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_ACTION, 18);
+
+    sheet.getRange(DR.ES_PAD, col).setValue("").setBackground(DB.BG_CARD);
+    sheet.setRowHeight(DR.ES_PAD, 10);
+
+  } catch (e) { Logger.log("writeVIXCard ERROR: " + e.message); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CARD 4b — ES FUTURES  (CARD_R at ES rows 19–25)
 // ─────────────────────────────────────────────────────────────
 function writeESCard(sheet, esData) {
   try {
@@ -602,40 +697,49 @@ function shouldFireDashboardBrief(cstMins, dow) {
 function getMarketStatus(cstMins, dow) {
   if (dow === 0 || dow === 6) {
     return {
-      label:     "CLOSED  ·  " + (dow === 6 ? "Saturday" : "Sunday"),
-      countdown: "Markets reopen Monday 8:30am cst",
-      session:   "Weekend — no active session",
-      next:      "Pre-market opens Monday 4:00am cst",
-      color:     DB.TXT_DIM
+      label:     "CLOSED  ·  " + (dow === 6 ? "SATURDAY" : "SUNDAY"),
+      color:     DB.TXT_DIM,
+      session:   "Markets closed for the weekend.",
+      countdown: "",
+      next:      "Opens Monday 8:30 am cst"
     };
   }
-  if (cstMins < 240) return {
-    label: "🌙  OVERNIGHT", countdown: "Pre-market opens at 4:00am cst",
-    session: "Overnight — no active session", next: "Next: pre-market 4:00am cst", color: DB.TXT_DIM
-  };
-  if (cstMins < 510) return {
-    label: "👁️  PRE-MARKET", countdown: "Market opens at 8:30am cst",
-    session: "Pre-market session active", next: "Bear Trap window: 8:30–9:30am cst", color: DB.TXT_GOLD
-  };
-  if (cstMins < 570) return {
-    label: "🪤  BEAR TRAP ACTIVE", countdown: "Window closes at 9:30am cst",
-    session: "Active window — watch flush → stall → flip", next: "DO NOT buy during flush phase", color: DB.TXT_GREEN
-  };
-  if (cstMins < 585) return {
-    label: "⚡  LATE WINDOW", countdown: "Window closes at 9:30am cst",
-    session: "Late Bear Trap window — or invalidated", next: "EOD brief fires at 3:00pm cst", color: DB.TXT_ORANGE
-  };
-  if (cstMins < 900) return {
-    label: "📈  MARKET OPEN", countdown: "Intraday session underway",
-    session: "Regular session", next: "EOD brief fires at 3:00pm cst", color: DB.TXT_CYAN
-  };
-  if (cstMins < 960) return {
-    label: "📊  EOD WIND-DOWN", countdown: "Market closes at 3:00pm cst",
-    session: "Late session", next: "Overnight watch begins after close", color: DB.TXT_DIM
-  };
+
+  var openMins  = 8 * 60 + 30;   // 8:30 CST
+  var closeMins = 15 * 60;       // 3:00 CST
+
+  if (cstMins < openMins) {
+    var minsToOpen = openMins - cstMins;
+    var hto = Math.floor(minsToOpen / 60);
+    var mto = minsToOpen % 60;
+    return {
+      label:     "PRE-MARKET",
+      color:     DB.TXT_GOLD,
+      session:   "Futures & pre-market active",
+      countdown: "Opens in " + (hto > 0 ? hto + "h " : "") + mto + "m",
+      next:      "Open  8:30 am cst"
+    };
+  }
+
+  if (cstMins < closeMins) {
+    var minsLeft = closeMins - cstMins;
+    var hl = Math.floor(minsLeft / 60);
+    var ml = minsLeft % 60;
+    return {
+      label:     "MARKET OPEN",
+      color:     DB.TXT_GREEN,
+      session:   "Regular session in progress",
+      countdown: "Closes in " + (hl > 0 ? hl + "h " : "") + ml + "m",
+      next:      "Close  3:00 pm cst"
+    };
+  }
+
   return {
-    label: "🔒  AFTER HOURS", countdown: "Market closed",
-    session: "After-hours session", next: "Pre-market opens tomorrow 4:00am cst", color: DB.TXT_DIM
+    label:     "AFTER HOURS",
+    color:     DB.TXT_SECONDARY,
+    session:   "Regular session closed",
+    countdown: "Extended trading active",
+    next:      "Opens tomorrow 8:30 am cst"
   };
 }
 
@@ -643,45 +747,46 @@ function getMarketStatus(cstMins, dow) {
 // AI STATUS
 // ─────────────────────────────────────────────────────────────
 function getAIStatus(cstMins, dow) {
+  var nextBrief = getNextBriefTimeStr(cstMins, dow);
   if (dow === 0 || dow === 6) return {
-    mode: "💤  WEEKEND — MONITORING ONLY",
-    waiting: "No active trading. ES futures + overnight context only.",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+    mode: "😴  WEEKEND — RESTING",
+    waiting: "No briefings on weekends. See you Monday.",
+    nextBrief: nextBrief
   };
-  if (cstMins < 240) return {
-    mode: "💤  OVERNIGHT — STANDBY",
-    waiting: "Monitoring ES futures overnight.",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+  if (cstMins < 360) return {
+    mode: "🌙  OVERNIGHT — MONITORING",
+    waiting: "Watching overnight price action.",
+    nextBrief: nextBrief
   };
-  if (cstMins < 505) return {
-    mode: "👁️  PRE-MARKET — WATCHING",
-    waiting: "Morning brief fires at 8:25am cst.",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+  if (cstMins < 480) return {
+    mode: "🌅  PRE-MARKET — EARLY",
+    waiting: "Briefings every 30 min. Gathering context.",
+    nextBrief: nextBrief
   };
   if (cstMins < 510) return {
-    mode: "🔔  MORNING BRIEF — IMMINENT",
-    waiting: "Generating morning brief now...",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+    mode: "🔥  PRE-MARKET — HOT ZONE",
+    waiting: "Bear Trap window opens in minutes.",
+    nextBrief: nextBrief
   };
-  if (cstMins < 570) return {
-    mode: "🪤  BEAR TRAP — ACTIVE",
-    waiting: "Monitoring flush → stall → flip pattern.",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+  if (cstMins < 585) return {
+    mode: "⚡  MARKET OPEN — ACTIVE",
+    waiting: "Bear Trap window active. Briefings every 15 min.",
+    nextBrief: nextBrief
   };
   if (cstMins < 900) return {
     mode: "📊  INTRADAY — TRACKING",
     waiting: "Briefings every 30 min. Watching key levels.",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+    nextBrief: nextBrief
   };
   if (cstMins < 960) return {
     mode: "🏁  EOD — GRADING",
     waiting: "Grading morning brief accuracy.",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+    nextBrief: nextBrief
   };
   return {
     mode: "🔒  AFTER HOURS — STANDBY",
     waiting: "Session closed. Overnight monitoring begins.",
-    nextBrief: getNextBriefTimeStr(cstMins, dow)
+    nextBrief: nextBrief
   };
 }
 
