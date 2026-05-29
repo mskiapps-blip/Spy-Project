@@ -1,7 +1,8 @@
 // ============================================================
 // FILE: AIAnalyst.gs
 // PURPOSE: Calls Gemini 2.5 Flash (free tier) for large moves.
-//          Designed for minimal token use on the free tier.
+//          Now includes richer session context in every prompt:
+//          VWAP distance, S/R levels, and rolling scorecard stats.
 //
 //  SETUP: Add your key in Apps Script →
 //         Project Settings → Script Properties
@@ -14,14 +15,14 @@ var GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/"
                     + GEMINI_MODEL + ":generateContent";
 
 // ─────────────────────────────────────────────────────────────
-// TOKEN BUDGET — keeps free tier usage tiny
-// ~40 tokens in, 120 tokens out per call
+// TOKEN BUDGET
+// ~120 tokens in (up from ~40), 160 tokens out (up from 120).
+// Still ~280 tokens/call — well under free tier.
 // ─────────────────────────────────────────────────────────────
-var GEMINI_MAX_OUTPUT_TOKENS = 120;
+var GEMINI_MAX_OUTPUT_TOKENS = 160;
 
 // ─────────────────────────────────────────────────────────────
 // COOLDOWN — minimum minutes between AI calls
-// Prevents quota burn on volatile days
 // ─────────────────────────────────────────────────────────────
 var AI_COOLDOWN_MINUTES = 15;
 
@@ -43,8 +44,8 @@ function getAIMemo(data, pctChange, tickChange, trendStr, now) {
       return "⚙️ Add GEMINI_API_KEY in Script Properties to enable AI memos.";
     }
 
-    // ── Build short prompt ────────────────────────────────────
-    var prompt = buildPrompt(data.price, pctChange, tickChange, trendStr);
+    // ── Build enriched prompt ─────────────────────────────────
+    var prompt = buildPrompt(data, pctChange, tickChange, trendStr);
     Logger.log("AI prompt: " + prompt);
 
     // ── Call Gemini ───────────────────────────────────────────
@@ -94,16 +95,32 @@ function getAIMemo(data, pctChange, tickChange, trendStr, now) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// BUILD PROMPT — ultra-short to save tokens
+// BUILD PROMPT — enriched with VWAP, S/R zones, session context
 // ─────────────────────────────────────────────────────────────
-function buildPrompt(price, pctChange, tickChange, trendStr) {
-  var sign = pctChange >= 0 ? "+" : "";
-  var dir  = pctChange >= 0 ? "up" : "down";
+function buildPrompt(data, pctChange, tickChange, trendStr) {
+  var sign    = pctChange >= 0 ? "+" : "";
+  var dir     = pctChange >= 0 ? "up" : "down";
+  var vwap    = data.vwap || 0;
+  var vwapStr = vwap > 0
+    ? "$" + vwap.toFixed(2) + " (" + ((data.price - vwap) / vwap * 100).toFixed(2) + "% " + (data.price >= vwap ? "above" : "below") + ")"
+    : "unknown";
+
+  // Pull S/R context from flags saved by Logger.gs
+  var s1 = getFlag("SESSION_LAST_S1") || "—";
+  var r1 = getFlag("SESSION_LAST_R1") || "—";
+
+  var sessionCtx = buildSessionContext();
+
   return (
-    "SPY $" + price.toFixed(2) + " (" + sign + pctChange.toFixed(2) + "% today). " +
-    "Moved " + dir + " $" + Math.abs(tickChange).toFixed(2) + " this tick. " +
-    "Trend: " + trendStr + ". " +
-    "2 sentences: likely cause + rest-of-day implication. No disclaimers."
+    "SPY large-move alert.\n" +
+    "Price: $" + data.price.toFixed(2) + " (" + sign + pctChange.toFixed(2) + "% today).\n" +
+    "Tick: moved " + dir + " $" + Math.abs(tickChange).toFixed(2) + " this bar.\n" +
+    "VWAP: " + vwapStr + "\n" +
+    "Nearest support: " + s1 + "\n" +
+    "Nearest resistance: " + r1 + "\n" +
+    "Trend: " + trendStr + "\n" +
+    sessionCtx + "\n" +
+    "2 sentences: likely cause of this move + what to watch for rest of day. No disclaimers."
   );
 }
 
@@ -116,4 +133,57 @@ function isAICooldownClear(now) {
   var last    = parseInt(lastStr);
   if (isNaN(last)) return true;
   return (now.getTime() - last) / 60000 >= AI_COOLDOWN_MINUTES;
+}
+
+// ─────────────────────────────────────────────────────────────
+// BUILD SESSION CONTEXT — shared helper used by all three AI
+// prompt builders. Pulls rolling scorecard stats and intraday
+// session state from flags. Kept compact: ~40-50 extra tokens.
+//
+// IMPORTANT: Logger.gs must call setFlag("SESSION_LAST_S1", ...)
+//            and setFlag("SESSION_LAST_R1", ...) each tick so
+//            this function always has fresh S/R data to read.
+//            See Logger.gs integration note below.
+// ─────────────────────────────────────────────────────────────
+function buildSessionContext() {
+  try {
+    var winRate    = getFlag("SC_ROLLING_WIN_RATE")     || "?";
+    var patRate    = getFlag("SC_ROLLING_PATTERN_RATE") || "?";
+    var totalDays  = getFlag("SC_TOTAL_DAYS")           || "?";
+    var mbSetup    = getFlag("MB_SETUP_TYPE")           || "unknown";
+    var mbRationale = getFlag("MB_RATIONALE")           || "";
+
+    var parts = [];
+    if (winRate !== "?")   parts.push("20d win rate: " + winRate + "%");
+    if (patRate !== "?")   parts.push("pattern rate: " + patRate + "%");
+    if (totalDays !== "?") parts.push("days tracked: " + totalDays);
+    if (mbSetup !== "unknown") parts.push("morning setup: " + mbSetup);
+    if (mbRationale)       parts.push("brief: " + mbRationale);
+
+    return parts.length > 0 ? "Historical context: " + parts.join(" | ") + "." : "";
+  } catch (e) {
+    Logger.log("buildSessionContext ERROR: " + e.message);
+    return "";
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// SCORECARD CONTEXT REFRESH — call this from updateScorecardStats()
+// in Scorecard.gs after stats are recalculated, to cache the
+// rolling numbers as flags for buildSessionContext() to read.
+//
+// Add this call at the end of updateScorecardStats():
+//   cacheSessionContextFlags(winRate, windowWinRate, patternRate, dataRows);
+// ─────────────────────────────────────────────────────────────
+function cacheSessionContextFlags(allTimeWinRate, rollingWinRate, patternRate, totalDays) {
+  try {
+    // Use rolling 20-day win rate as the primary signal (more relevant)
+    setFlag("SC_ROLLING_WIN_RATE",     rollingWinRate.toString());
+    setFlag("SC_ROLLING_PATTERN_RATE", patternRate.toString());
+    setFlag("SC_TOTAL_DAYS",           totalDays.toString());
+    Logger.log("Session context flags cached: winRate=" + rollingWinRate +
+               "% patRate=" + patternRate + "% days=" + totalDays);
+  } catch (e) {
+    Logger.log("cacheSessionContextFlags ERROR: " + e.message);
+  }
 }
