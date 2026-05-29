@@ -214,7 +214,7 @@ function generateForecast(sheet, data, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 4000, temperature: 0.3 }
+      generationConfig: { maxOutputTokens: 2500, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -365,26 +365,26 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
     "Generate a full-day SPY price forecast for all 14 slots: " + slotLabels + ".\n" +
     "STRICT RULES — you MUST follow these exactly:\n" +
     "  1. Return ONLY raw JSON, no markdown, no backticks, no extra text.\n" +
-    "  2. Every memo MUST be 16 words or less.\n" +
+    "  2. Every memo MUST be 8 words or less.\n" +
     "  3. ALL 14 slots required — do not skip any.\n" +
     "  4. Price to 2 decimal places, conf is integer 1-10.\n" +
     "  5. Use S/R levels and Bear Trap phase to inform price targets.\n\n" +
     "Return this exact structure with ALL 14 slots:\n" +
     '{"slots":[' +
-    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"9:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"10:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"10:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"11:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"11:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"12:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"12:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"1:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"1:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"2:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"2:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"3:00 PM","price":0.00,"conf":5,"memo":"16 words max"}' +
+    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"9:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"10:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"10:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"11:00 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"11:30 AM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"12:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"12:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"1:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"1:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"2:00 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"2:30 PM","price":0.00,"conf":5,"memo":"8 words max"},' +
+    '{"time":"3:00 PM","price":0.00,"conf":5,"memo":"8 words max"}' +
     ']}\n\n' +
     "All 14 slots required: " + slotLabels;
 
@@ -561,16 +561,45 @@ function applyForecastRowFormat(sheet, row, slotIdx, slotMins, cstMins, conf, pr
 // ─────────────────────────────────────────────────────────────
 // BUILD / REFRESH FORECAST CHART
 //
-// FIX: Chart always has data to draw because the predicted
-// price column (COL_PRED) is always populated after the first
-// forecast. Before market open, only the gold forecast line
-// renders. The cyan actual line grows in during the session.
-// This prevents the empty-box problem when actuals are absent.
+// Y-axis is computed dynamically from predicted + actual prices
+// so the line is always visible even when the price range is
+// very tight (e.g. all slots within $1 of each other).
+// A minimum $4 window is enforced so there's always visible
+// spread on the chart. Centered on the midpoint of all values.
 // ─────────────────────────────────────────────────────────────
 function buildForecastChart(sheet) {
   try {
     var existing = sheet.getCharts();
     existing.forEach(function(c) { sheet.removeChart(c); });
+
+    // ── Compute Y-axis bounds from predicted + actual values ──
+    var allPrices = [];
+    for (var i = 0; i < FC.SLOT_COUNT; i++) {
+      var row  = FC.DATA_START_ROW + i;
+      var pred = parseFloat(sheet.getRange(row, FC.COL_PRED).getValue());
+      var act  = parseFloat(sheet.getRange(row, FC.COL_ACTUAL).getValue());
+      if (!isNaN(pred) && pred > 0) allPrices.push(pred);
+      if (!isNaN(act)  && act  > 0) allPrices.push(act);
+    }
+
+    var yMin, yMax;
+    if (allPrices.length > 0) {
+      var dataMin = Math.min.apply(null, allPrices);
+      var dataMax = Math.max.apply(null, allPrices);
+      var range   = dataMax - dataMin;
+      // Enforce minimum $4 visible window, pad by $1 on each side
+      var pad     = Math.max(1, range * 0.15);
+      var window  = Math.max(4, range + pad * 2);
+      var mid     = (dataMin + dataMax) / 2;
+      yMin = Math.floor((mid - window / 2) * 100) / 100;
+      yMax = Math.ceil( (mid + window / 2) * 100) / 100;
+    } else {
+      // Fallback when no data yet — use a sensible SPY window
+      yMin = 740;
+      yMax = 770;
+    }
+
+    Logger.log("FC: Chart Y-axis range $" + yMin + " – $" + yMax);
 
     // Range spans header row + all 14 data rows
     var numRows     = FC.DATA_END_ROW - FC.HEADER_ROW + 1;
@@ -602,10 +631,11 @@ function buildForecastChart(sheet) {
         title: "Time (CST)", titleTextStyle: { color: "#5a5a8a" }
       })
       .setOption("vAxis", {
-        textStyle: { color: "#7070aa", fontSize: 9 },
-        gridlines: { color: "#1a1a3e" },
-        title: "SPY Price ($)", titleTextStyle: { color: "#5a5a8a" },
-        format: "$#,##0.00"
+        textStyle:  { color: "#7070aa", fontSize: 9 },
+        gridlines:  { color: "#1a1a3e" },
+        title:      "SPY Price ($)", titleTextStyle: { color: "#5a5a8a" },
+        format:     "$#,##0.00",
+        viewWindow: { min: yMin, max: yMax }
       })
       .setOption("legend", { position: "top", textStyle: { color: "#aaaacc", fontSize: 10 } })
       .setOption("chartArea", {
