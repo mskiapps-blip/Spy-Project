@@ -587,16 +587,24 @@ function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldB
     var lastBriefMins = parseInt(getFlag("DASHBOARD_LAST_BRIEF_MINS") || "-1");
     var briefText     = getFlag("DASHBOARD_LAST_BRIEF_TEXT") || "⏳ Waiting for first briefing...";
 
-    // Only show posted time if we have a valid stored brief
-    var hasValidBrief = (lastBriefMins >= 0 && briefText.length > 20 && briefText !== "⏳ Waiting for first briefing...");
-    var briefTime     = hasValidBrief ? minsToTimeStr(lastBriefMins) : null;
-    var postedStr     = briefTime ? briefTime + " cst" : "not yet posted";
+    // A valid brief must be substantial (≥80 chars) and end with sentence punctuation
+    var lastChar      = briefText.length > 0 ? briefText[briefText.length - 1] : "";
+    var hasValidBrief = (lastBriefMins >= 0
+                         && briefText.length >= 80
+                         && (lastChar === "." || lastChar === "!" || lastChar === "?"));
 
-    // Next update: only meaningful once a brief has fired; overnight show a simpler label
-    var mode          = getDashboardBriefMode(cstMins, dow);
-    var nextBriefStr  = (mode === "OVERNIGHT" && !hasValidBrief)
-                        ? "next market session"
-                        : getNextBriefTimeStr(cstMins, dow);
+    // If stored brief is garbage, reset it so the placeholder shows instead
+    if (!hasValidBrief && briefText !== "⏳ Waiting for first briefing...") {
+      briefText = "⏳ Waiting for first briefing...";
+    }
+
+    var postedStr    = hasValidBrief ? minsToTimeStr(lastBriefMins) + " cst" : "not yet posted";
+
+    // During overnight with no valid brief, don't show a confusing far-future time
+    var mode         = getDashboardBriefMode(cstMins, dow);
+    var nextBriefStr = (mode === "OVERNIGHT")
+                       ? "pre-market  (~" + Math.round(((8 * 60) - cstMins + 1440) % 1440 / 60) + " hr)"
+                       : getNextBriefTimeStr(cstMins, dow);
 
     if (shouldBrief) {
       var newBrief = generateDashboardBrief(data, esData, vixData, now);
