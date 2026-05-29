@@ -196,3 +196,7 @@ function getOrCreateSheet(ss, name) {
   if (!sheet) sheet = ss.insertSheet(name);
   return sheet;
 }
+
+if (!ss.getSheetByName(SHEET_FORECAST)) {
+  setupForecastSheet(ss);
+}
