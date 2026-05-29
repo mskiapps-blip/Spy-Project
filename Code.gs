@@ -37,11 +37,14 @@ var BYPASS_MARKET_HOURS = false;
 // ─────────────────────────────────────────────────────────────
 function runEvery5Minutes() {
   try {
-    var now = getCurrentEasternTime();
-    Logger.log("runEvery5Minutes fired at ET: " + now.toString());
+    var now = getCurrentEasternTime(); // raw UTC Date — see fix below
+    Logger.log("runEvery5Minutes fired at UTC: " + now.toString());
 
     if (!BYPASS_MARKET_HOURS) {
-      var dayOfWeek = now.getDay();
+
+      // ── Day-of-week extracted safely in ET via Utilities.formatDate ─
+      // "u" = 1(Mon)–7(Sun); % 7 maps to 0=Sun … 6=Sat (matches .getDay())
+      var dayOfWeek = parseInt(Utilities.formatDate(now, "America/New_York", "u"), 10) % 7;
 
       // ── Weekends: only run dashboard (briefings every 4 hrs) ─
       if (dayOfWeek === 0 || dayOfWeek === 6) {
@@ -63,26 +66,26 @@ function runEvery5Minutes() {
 
       // ── Market closed: overnight dashboard + EOD hooks ────
       if (!isMarketOpen(now)) {
-        var h = now.getHours();
-        var m = now.getMinutes();
-        if (h === MARKET_CLOSE_HOUR && m < 10) {
+        var etH = parseInt(Utilities.formatDate(now, "America/New_York", "H"),  10);
+        var etM = parseInt(Utilities.formatDate(now, "America/New_York", "mm"), 10);
+        if (etH === MARKET_CLOSE_HOUR && etM < 10) {
           finalizeDaySummary();
         }
-        Logger.log("Market closed at ET " + h + ":" + m);
+        Logger.log("Market closed at ET " + etH + ":" + etM);
         setFlag("MARKET_OPEN_TODAY", "NO");
 
         var closingData = fetchSPYData();
         if (closingData) {
           runBearTrapTick(closingData, now);
           runMorningBriefTick(closingData, now);
-          runDashboardTick(closingData, now);  // ← Dashboard runs overnight too
+          runDashboardTick(closingData, now);
         }
         return;
       }
 
       // ── Pre-market Morning Brief window (8:25 CST = 9:25 ET) ─
-      var etHour = now.getHours();
-      var etMin  = now.getMinutes();
+      var etHour = parseInt(Utilities.formatDate(now, "America/New_York", "H"),  10);
+      var etMin  = parseInt(Utilities.formatDate(now, "America/New_York", "mm"), 10);
       var etMins = etHour * 60 + etMin;
       if (etMins >= 565 && etMins < 570) {
         var preData = fetchSPYData();
@@ -112,7 +115,7 @@ function runEvery5Minutes() {
 
     runBearTrapTick(data, now);
     runMorningBriefTick(data, now);
-    runDashboardTick(data, now);   // ← Dashboard updates every tick
+    runDashboardTick(data, now);
 
   } catch (e) {
     Logger.log("runEvery5Minutes ERROR: " + e.message + "\n" + e.stack);
@@ -131,7 +134,7 @@ function runManualTick() {
     if (logSheet) addVolumeHeaderNotes(logSheet);
 
     var now = getCurrentEasternTime();
-    Logger.log("Manual tick at ET: " + now.toString());
+    Logger.log("Manual tick at UTC: " + now.toString());
 
     var data = fetchSPYData();
     if (!data) {
@@ -177,8 +180,7 @@ function runManualMorningBrief() {
       return;
     }
 
-    var cst      = toCSTDate(now);
-    var todayStr = Utilities.formatDate(cst, "America/Chicago", "yyyy-MM-dd");
+    var todayStr = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
     var sheet    = ss.getSheetByName(SHEET_MORNING_BRIEF);
     if (!sheet) {
       setupMorningBriefSheet(ss);
@@ -186,7 +188,7 @@ function runManualMorningBrief() {
     }
 
     setFlag("MB_BRIEF_FIRED_TODAY", "");
-    generateMorningBrief(sheet, data, cst, todayStr);
+    generateMorningBrief(sheet, data, now, todayStr);
     setFlag("MB_BRIEF_FIRED_TODAY", todayStr);
 
     SpreadsheetApp.getUi().alert(
@@ -278,14 +280,12 @@ function finalizeDaySummary() {
   try {
     var todayFlag = getFlag("DAY_FINALIZED");
     var now       = getCurrentEasternTime();
-    var cst       = toCSTDate(now);
-    var todayStr  = Utilities.formatDate(cst, "America/Chicago", "yyyy-MM-dd");
+    var todayStr  = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
     if (todayFlag === todayStr) return;
 
-    // Reset daily tracking flags
-    setFlag("TICK_COUNT",        "0");
-    setFlag("DAY_OPEN_PRICE",    "");
-    setFlag("DAY_FINALIZED",     todayStr);
+    setFlag("TICK_COUNT",    "0");
+    setFlag("DAY_OPEN_PRICE", "");
+    setFlag("DAY_FINALIZED",  todayStr);
     Logger.log("Day finalized: " + todayStr);
   } catch (e) {
     Logger.log("finalizeDaySummary ERROR: " + e.message);
@@ -322,19 +322,23 @@ function clearLogData() {
 // ─────────────────────────────────────────────────────────────
 // MARKET OPEN CHECK
 // ─────────────────────────────────────────────────────────────
-function isMarketOpen(easternDate) {
-  var totalMins = easternDate.getHours() * 60 + easternDate.getMinutes();
-  var openMins  = MARKET_OPEN_HOUR  * 60 + MARKET_OPEN_MIN;
-  var closeMins = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MIN;
-  return totalMins >= openMins && totalMins < closeMins;
+function isMarketOpen(utcDate) {
+  var etH   = parseInt(Utilities.formatDate(utcDate, "America/New_York", "H"),  10);
+  var etM   = parseInt(Utilities.formatDate(utcDate, "America/New_York", "mm"), 10);
+  var total = etH * 60 + etM;
+  var open  = MARKET_OPEN_HOUR  * 60 + MARKET_OPEN_MIN;
+  var close = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MIN;
+  return total >= open && total < close;
 }
 
 // ─────────────────────────────────────────────────────────────
-// GET CURRENT EASTERN TIME
+// GET CURRENT TIME — returns raw UTC Date
+// All timezone rendering is handled downstream via
+// Utilities.formatDate(..., "America/New_York", ...) for ET logic
+// and Utilities.formatDate(..., "America/Chicago", ...) for CST display.
 // ─────────────────────────────────────────────────────────────
 function getCurrentEasternTime() {
-  var now = new Date();
-  return new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  return new Date();
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -2,22 +2,6 @@
 // FILE: Dashboard.gs
 // PURPOSE: 🖥️ MISSION CONTROL — Card-grid dashboard.
 //
-//  LAYOUT — card grid using columns as layout tools:
-//
-//    Col:  A    B         C    D         E    F         G    H
-//          gap  CARD-L    gap  CARD-R    gap  (wide)    gap  (end)
-//    Widths: 8  310       8   310        8   (varies)   8
-//
-//  ROW STRUCTURE:
-//    Rows 1-2   : Banner + subtitle
-//    Rows 3     : gap
-//    Rows 4-11  : ROW 1 CARDS — SPY Price (left) | Market Status (right)
-//    Row  12    : gap
-//    Rows 13-20 : ROW 2 CARDS — AI Status (left) | ES Futures (right)
-//    Row  21    : gap
-//    Rows 22-32 : FULL-WIDTH — AI Briefing card
-//    Row  33    : gap
-//
 //  All times CST 12-hour format.
 // ============================================================
 
@@ -65,8 +49,6 @@ var DB = {
 
 // ─────────────────────────────────────────────────────────────
 // COLUMN MAP
-// A=1 B=2 C=3 D=4 E=5 F=6 G=7
-//  gap  L-card  gap  R-card  gap  wide  gap
 // ─────────────────────────────────────────────────────────────
 var DC = {
   GAP_L:   1,
@@ -134,7 +116,15 @@ var ES_ALIGN = {
 };
 
 // ─────────────────────────────────────────────────────────────
-// MAIN ENTRY
+// MAIN ENTRY — FIXED
+//
+// toCSTDate(now) returns a plain helper object used ONLY for
+// .getHours() / .getMinutes() / .getDay() logic.
+//
+// All Utilities.formatDate calls use `now` (raw UTC Date) directly
+// because Utilities.formatDate handles timezone conversion correctly.
+// Card writers (writeSPYCard, writeBriefCard, etc.) now receive
+// `now` instead of `cst` so their internal formatDate calls work.
 // ─────────────────────────────────────────────────────────────
 function runDashboardTick(data, now) {
   try {
@@ -156,14 +146,16 @@ function runDashboardTick(data, now) {
 
     var shouldBrief = shouldFireDashboardBrief(cstMins, dow);
 
-    writeSPYCard(sheet, data, cst);
+    // Pass `now` (raw UTC Date) — not `cst` — to all card writers
+    writeSPYCard(sheet, data, now);
     writeMarketCard(sheet, cstMins, dow);
     writeAICard(sheet, cstMins, dow);
     writeESCard(sheet, esData);
-    writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldBrief);
+    writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldBrief);
 
-    var timeStr = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
-    var dateStr = Utilities.formatDate(cst, "America/Chicago", "EEE MMM d, yyyy");
+    // Subtitle — Utilities.formatDate works correctly on raw UTC Date
+    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mm a").toLowerCase();
+    var dateStr = Utilities.formatDate(now, "America/Chicago", "EEE MMM d, yyyy");
     sheet.getRange(DR.SUBTITLE, 1, 1, 7).merge()
       .setValue("refreshed  " + timeStr + " cst  ·  " + dateStr)
       .setFontColor(DB.TXT_DIM).setFontSize(8)
@@ -205,9 +197,10 @@ function writeCardField(sheet, row, col, labelTxt, valueTxt, valueFg, valueSz, i
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 1 — SPY PRICE  (left, rows 4–10)
+// CARD 1 — SPY PRICE
+// now = raw UTC Date for Utilities.formatDate
 // ─────────────────────────────────────────────────────────────
-function writeSPYCard(sheet, data, cst) {
+function writeSPYCard(sheet, data, now) {
   try {
     var price     = data ? (data.price     || 0) : 0;
     var prevClose = data ? (data.prevClose || price) : 0;
@@ -250,7 +243,7 @@ function writeSPYCard(sheet, data, cst) {
       .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.SPY_PREV, 22);
 
-    var timeStr = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
+    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mm a").toLowerCase();
     sheet.getRange(DR.SPY_TIME, col)
       .setValue("as of  " + timeStr + " cst")
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
@@ -264,7 +257,7 @@ function writeSPYCard(sheet, data, cst) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 2 — MARKET STATUS  (right, rows 4–10)
+// CARD 2 — MARKET STATUS
 // ─────────────────────────────────────────────────────────────
 function writeMarketCard(sheet, cstMins, dow) {
   try {
@@ -281,189 +274,163 @@ function writeMarketCard(sheet, cstMins, dow) {
       .setFontSize(16).setFontWeight("bold")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
 
-    sheet.getRange(DR.SPY_CHANGE, col).setValue(s.countdown)
-      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
-      .setFontSize(13).setFontWeight("bold")
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.getRange(DR.SPY_CHANGE, col).setValue(s.session)
+      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
+      .setFontSize(11).setHorizontalAlignment("left").setVerticalAlignment("middle");
 
     sheet.getRange(DR.SPY_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
 
-    sheet.getRange(DR.SPY_PREV, col).setValue(s.session)
+    sheet.getRange(DR.SPY_PREV, col).setValue(s.countdown)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
       .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
 
     sheet.getRange(DR.SPY_TIME, col).setValue(s.next)
-      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
-      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle").setWrap(true);
+      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle");
 
     sheet.getRange(DR.SPY_PAD, col).setValue("").setBackground(DB.BG_CARD);
 
+    for (var r = DR.SPY_HDR; r <= DR.SPY_PAD; r++) {
+      sheet.getRange(r, DC.GAP_L).setBackground(DB.BG_GAP);
+      sheet.getRange(r, DC.GAP_M).setBackground(DB.BG_GAP);
+      sheet.getRange(r, DC.GAP_R).setBackground(DB.BG_GAP);
+      if (sheet.getMaxColumns() >= DC.GAP_END) sheet.getRange(r, DC.GAP_END).setBackground(DB.BG_GAP);
+    }
   } catch (e) { Logger.log("writeMarketCard ERROR: " + e.message); }
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 3 — AI STATUS  (left, rows 12–17)
+// CARD 3 — AI STATUS
 // ─────────────────────────────────────────────────────────────
 function writeAICard(sheet, cstMins, dow) {
   try {
-    var ai  = getAIStatus(cstMins, dow);
+    var s   = getAIStatus(cstMins, dow);
     var col = DC.CARD_L;
 
-    sheet.getRange(DR.AI_HDR, col).setValue("  🤖  AI SYSTEM STATUS")
+    sheet.getRange(DR.AI_HDR, col).setValue("  🧠  AI STATUS")
       .setBackground(DB.HDR_AI).setFontColor(DB.TXT_HDR_AI)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.AI_HDR, 28);
 
-    sheet.getRange(DR.AI_MODE, col).setValue(ai.mode)
+    sheet.getRange(DR.AI_MODE, col).setValue(s.mode)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_PURPLE)
       .setFontSize(13).setFontWeight("bold")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.AI_MODE, 30);
 
-    sheet.getRange(DR.AI_WATCH, col).setValue(ai.waiting)
+    sheet.getRange(DR.AI_WATCH, col).setValue(s.waiting)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
-      .setFontSize(9).setWrap(true)
-      .setHorizontalAlignment("left").setVerticalAlignment("top");
-    sheet.setRowHeight(DR.AI_WATCH, 36);
+      .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.AI_WATCH, 22);
 
     sheet.getRange(DR.AI_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
     sheet.setRowHeight(DR.AI_DIV, 2);
 
-    sheet.getRange(DR.AI_NEXT, col).setValue("▶  " + ai.nextAction)
-      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
-      .setFontSize(9).setFontWeight("bold").setWrap(true)
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
-    sheet.setRowHeight(DR.AI_NEXT, 30);
+    sheet.getRange(DR.AI_NEXT, col).setValue(s.nextBrief)
+      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.AI_NEXT, 18);
 
     sheet.getRange(DR.AI_PAD, col).setValue("").setBackground(DB.BG_CARD);
     sheet.setRowHeight(DR.AI_PAD, 10);
-
   } catch (e) { Logger.log("writeAICard ERROR: " + e.message); }
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 4 — ES FUTURES  (right, rows 12–17)
+// CARD 4 — ES FUTURES
 // ─────────────────────────────────────────────────────────────
 function writeESCard(sheet, esData) {
   try {
-    var al  = getESAlignmentStatus(esData);
     var col = DC.CARD_R;
 
-    var esPrice = esData ? "$" + esData.price.toFixed(2) : "—";
-    var esChg   = esData ? (esData.changePct >= 0 ? "+" : "") + esData.changePct.toFixed(2) + "%" : "—";
-    var esTrend = esData ? esData.trend : "—";
-    var esFg    = esData ? (esData.changePct >= 0 ? DB.TXT_GREEN : DB.TXT_RED) : DB.TXT_DIM;
-    var trendFg = esTrend === "FADING"   ? DB.TXT_GREEN
-                : esTrend === "CLIMBING" ? DB.TXT_RED : DB.TXT_GOLD;
-
-    sheet.getRange(DR.AI_HDR, col).setValue("  📡  ES FUTURES")
-      .setBackground(DB.HDR_ES).setFontColor(DB.TXT_HDR_ES)
-      .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
-
-    sheet.getRange(DR.AI_MODE, col)
-      .setValue(esPrice + "   " + esChg + "   " + esTrend)
-      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_PRIMARY)
-      .setFontSize(13).setFontWeight("bold")
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
-
-    sheet.getRange(DR.AI_WATCH, col).setValue(al.label)
-      .setBackground(DB.BG_CARD).setFontColor(al.color)
-      .setFontSize(11).setFontWeight("bold")
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
-
-    sheet.getRange(DR.AI_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
-
-    sheet.getRange(DR.AI_NEXT, col).setValue(al.action)
-      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
-      .setFontSize(9).setFontWeight("bold").setWrap(true)
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
-
-    sheet.getRange(DR.AI_PAD, col).setValue("").setBackground(DB.BG_CARD);
-
-  } catch (e) { Logger.log("writeESCard ERROR: " + e.message); }
-}
-
-// ─────────────────────────────────────────────────────────────
-// CARD 5 — ES DETAIL (full-width, rows 19–25)
-// ─────────────────────────────────────────────────────────────
-function writeESDetailCard(sheet, esData) {
-  try {
-    var al = getESAlignmentStatus(esData);
-
-    sheet.getRange(DR.ES_HDR, DC.CARD_L, 1, 3).merge()
-      .setValue("  📡  ES ALIGNMENT — BEAR TRAP SETUP CHECK")
+    sheet.getRange(DR.ES_HDR, col).setValue("  📡  ES FUTURES")
       .setBackground(DB.HDR_ES).setFontColor(DB.TXT_HDR_ES)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.ES_HDR, 28);
 
-    sheet.getRange(DR.ES_PRICE, DC.CARD_L, 1, 3).merge()
-      .setValue(al.label)
-      .setBackground(DB.BG_CARD).setFontColor(al.color)
-      .setFontSize(14).setFontWeight("bold")
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
-    sheet.setRowHeight(DR.ES_PRICE, 32);
-
-    sheet.getRange(DR.ES_ALIGN, DC.CARD_L, 1, 3).merge()
-      .setValue(al.reason)
-      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
-      .setFontSize(9).setWrap(true)
-      .setHorizontalAlignment("left").setVerticalAlignment("top");
-    sheet.setRowHeight(DR.ES_ALIGN, 38);
-
-    sheet.getRange(DR.ES_DIV, DC.CARD_L, 1, 3).merge()
-      .setValue("").setBackground(DB.BG_DIVIDER);
-    sheet.setRowHeight(DR.ES_DIV, 2);
-
-    sheet.getRange(DR.ES_SIGNAL, DC.CARD_L, 1, 3).merge()
-      .setValue("▶  " + al.action)
-      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
-      .setFontSize(9).setFontWeight("bold").setWrap(true)
-      .setHorizontalAlignment("left").setVerticalAlignment("middle");
-    sheet.setRowHeight(DR.ES_SIGNAL, 30);
-
-    sheet.getRange(DR.ES_ACTION, DC.CARD_L, 1, 3).merge()
-      .setValue("").setBackground(DB.BG_CARD);
-    sheet.setRowHeight(DR.ES_ACTION, 8);
-
-    for (var r = DR.ES_HDR; r <= DR.ES_ACTION; r++) {
-      sheet.getRange(r, DC.GAP_L).setBackground(DB.BG_GAP);
-      sheet.getRange(r, DC.GAP_M).setBackground(DB.BG_GAP);
-      sheet.getRange(r, DC.GAP_R).setBackground(DB.BG_GAP);
-      sheet.getRange(r, DC.GAP_END).setBackground(DB.BG_GAP);
+    if (!esData) {
+      sheet.getRange(DR.ES_PRICE, col).setValue("—").setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM).setFontSize(20).setFontWeight("bold").setHorizontalAlignment("left").setVerticalAlignment("middle");
+      sheet.setRowHeight(DR.ES_PRICE, 44);
+      sheet.getRange(DR.ES_ALIGN, col).setValue("No ES data").setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM).setFontSize(10).setHorizontalAlignment("left").setVerticalAlignment("middle");
+      sheet.setRowHeight(DR.ES_ALIGN, 24);
+      sheet.getRange(DR.ES_DIV,    col).setValue("").setBackground(DB.BG_DIVIDER); sheet.setRowHeight(DR.ES_DIV, 2);
+      sheet.getRange(DR.ES_SIGNAL, col).setValue("").setBackground(DB.BG_CARD).setFontSize(9).setFontColor(DB.TXT_DIM).setHorizontalAlignment("left").setVerticalAlignment("middle"); sheet.setRowHeight(DR.ES_SIGNAL, 22);
+      sheet.getRange(DR.ES_ACTION, col).setValue("").setBackground(DB.BG_CARD).setFontSize(8).setFontColor(DB.TXT_DIM).setHorizontalAlignment("left").setVerticalAlignment("middle"); sheet.setRowHeight(DR.ES_ACTION, 18);
+      sheet.getRange(DR.ES_PAD,    col).setValue("").setBackground(DB.BG_CARD); sheet.setRowHeight(DR.ES_PAD, 10);
+      return;
     }
 
-  } catch (e) { Logger.log("writeESDetailCard ERROR: " + e.message); }
+    var trendColor = esData.trend === "FADING"   ? DB.TXT_RED
+                   : esData.trend === "CLIMBING" ? DB.TXT_GREEN : DB.TXT_GOLD;
+    var alignTag   = esData.alignmentTag || "ES MONITOR";
+    var alignColor = alignTag === "ES VOID"    ? DB.TXT_RED
+                   : alignTag === "ES CAUTION" ? DB.TXT_ORANGE : DB.TXT_GOLD;
+    var alignAction = alignTag === "ES VOID"    ? "❌ DO NOT TRADE — Futures voiding setup"
+                    : alignTag === "ES CAUTION" ? "⚠️ Caution — Futures rising against trap"
+                    : "👁️ Monitor — Futures neutral";
+
+    sheet.getRange(DR.ES_PRICE, col).setValue("$" + esData.price.toFixed(2))
+      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_CYAN)
+      .setFontSize(20).setFontWeight("bold").setFontFamily("Roboto Mono")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_PRICE, 44);
+
+    sheet.getRange(DR.ES_ALIGN, col).setValue(esData.trend + "  ·  " + esData.change.toFixed(2) + " pts")
+      .setBackground(DB.BG_CARD).setFontColor(trendColor)
+      .setFontSize(13).setFontWeight("bold")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_ALIGN, 24);
+
+    sheet.getRange(DR.ES_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
+    sheet.setRowHeight(DR.ES_DIV, 2);
+
+    sheet.getRange(DR.ES_SIGNAL, col).setValue(alignTag)
+      .setBackground(DB.BG_CARD).setFontColor(alignColor)
+      .setFontSize(11).setFontWeight("bold")
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_SIGNAL, 22);
+
+    sheet.getRange(DR.ES_ACTION, col).setValue(alignAction)
+      .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
+      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_ACTION, 18);
+
+    sheet.getRange(DR.ES_PAD, col).setValue("").setBackground(DB.BG_CARD);
+    sheet.setRowHeight(DR.ES_PAD, 10);
+
+    for (var r2 = DR.ES_HDR; r2 <= DR.ES_PAD; r2++) {
+      sheet.getRange(r2, DC.GAP_L).setBackground(DB.BG_GAP);
+      sheet.getRange(r2, DC.GAP_M).setBackground(DB.BG_GAP);
+      sheet.getRange(r2, DC.GAP_R).setBackground(DB.BG_GAP);
+      if (sheet.getMaxColumns() >= DC.GAP_END) sheet.getRange(r2, DC.GAP_END).setBackground(DB.BG_GAP);
+    }
+  } catch (e) { Logger.log("writeESCard ERROR: " + e.message); }
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 6 — AI BRIEFING (full-width, rows 27–37)
+// CARD 5 — AI BRIEFING (full width)
+// now = raw UTC Date for Utilities.formatDate
 // ─────────────────────────────────────────────────────────────
-function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldBrief) {
+function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldBrief) {
   try {
-    var briefText    = getFlag("DASHBOARD_BRIEF_TEXT") || "";
-    var briefTime    = getFlag("DASHBOARD_BRIEF_TIME") || "";
-    var nextBriefStr = getNextBriefTimeStr(cstMins, dow);
+    var lastBriefMins = parseInt(getFlag("DASHBOARD_LAST_BRIEF_MINS") || "-1");
+    var briefText     = getFlag("DASHBOARD_LAST_BRIEF_TEXT") || "⏳ Waiting for first briefing...";
+    var briefTime     = lastBriefMins >= 0 ? minsToTimeStr(lastBriefMins) : "—";
+    var nextBriefStr  = getNextBriefTimeStr(cstMins, dow);
+    var postedStr     = briefTime !== "—" ? briefTime + " cst" : "—";
 
     if (shouldBrief) {
-      var newBrief = callGeminiForDashboardBrief(data, esData, vixData, cst, cstMins, dow);
+      var newBrief = generateDashboardBrief(data, esData, vixData, now);
       if (newBrief) {
         briefText = newBrief;
-        briefTime = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
-        setFlag("DASHBOARD_BRIEF_TEXT",      briefText);
-        setFlag("DASHBOARD_BRIEF_TIME",      briefTime);
+        setFlag("DASHBOARD_LAST_BRIEF_TEXT", briefText);
         setFlag("DASHBOARD_LAST_BRIEF_MINS", cstMins.toString());
+        postedStr    = minsToTimeStr(cstMins) + " cst";
+        nextBriefStr = getNextBriefTimeStr(cstMins, dow);
       }
     }
-
-    if (!briefText || briefText === "") {
-      briefText = buildFallbackBriefText(esData, cst, cstMins, dow, nextBriefStr);
-      briefTime = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
-    }
-
-    var postedStr = briefTime ? briefTime + " cst" : "—";
 
     sheet.getRange(DR.BR_HDR, DC.CARD_L, 1, 3).merge()
       .setValue("  🧠  AI MISSION BRIEFING")
@@ -496,12 +463,61 @@ function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldB
       sheet.getRange(rb, DC.GAP_L).setBackground(DB.BG_GAP);
       sheet.getRange(rb, DC.GAP_M).setBackground(DB.BG_GAP);
       sheet.getRange(rb, DC.GAP_R).setBackground(DB.BG_GAP);
-      if (sheet.getMaxColumns() >= DC.GAP_END) {
-        sheet.getRange(rb, DC.GAP_END).setBackground(DB.BG_GAP);
-      }
+      if (sheet.getMaxColumns() >= DC.GAP_END) sheet.getRange(rb, DC.GAP_END).setBackground(DB.BG_GAP);
     }
 
   } catch (e) { Logger.log("writeBriefCard ERROR: " + e.message); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// GENERATE DASHBOARD BRIEF via Gemini
+// now = raw UTC Date
+// ─────────────────────────────────────────────────────────────
+function generateDashboardBrief(data, esData, vixData, now) {
+  try {
+    var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+    if (!apiKey) return "⚙️ Add GEMINI_API_KEY in Script Properties to enable briefings.";
+
+    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mm a").toLowerCase();
+    var price   = data ? data.price : 0;
+    var pctChg  = (data && data.prevClose > 0)
+      ? ((price - data.prevClose) / data.prevClose * 100).toFixed(2) : "?";
+
+    var prompt =
+      "SPY dashboard brief at " + timeStr + " CST. " +
+      "SPY: $" + (price > 0 ? price.toFixed(2) : "?") + " (" + pctChg + "% vs close). " +
+      "VIX: " + (vixData ? vixData.price.toFixed(2) + " [" + vixData.regime + "]" : "?") + ". " +
+      "ES: " + (esData ? "$" + esData.price.toFixed(2) + " " + esData.trend : "?") + ". " +
+      "3-4 sentences: market status, key risk, trader action. Plain text, no bullets.";
+
+    var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
+    var payload = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 200, temperature: 0.4 }
+    });
+
+    var resp = UrlFetchApp.fetch(url, {
+      method: "post", contentType: "application/json",
+      payload: payload, muteHttpExceptions: true
+    });
+
+    if (resp.getResponseCode() !== 200) {
+      Logger.log("Dashboard brief Gemini error: " + resp.getResponseCode());
+      return null;
+    }
+
+    var json = JSON.parse(resp.getContentText());
+    return json.candidates
+        && json.candidates[0]
+        && json.candidates[0].content
+        && json.candidates[0].content.parts
+        && json.candidates[0].content.parts[0]
+         ? json.candidates[0].content.parts[0].text.trim()
+         : null;
+  } catch (e) {
+    Logger.log("generateDashboardBrief ERROR: " + e.message);
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -547,17 +563,12 @@ function getNextBriefTimeStr(cstMins, dow) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// getDashboardBriefMode
-// 570 = 9:30am CST (Bear Trap active window end)
-// 585 = 9:45am CST (trailing buffer for LATE WINDOW label)
-// ─────────────────────────────────────────────────────────────
 function getDashboardBriefMode(cstMins, dow) {
   if (dow === 0 || dow === 6) return "OVERNIGHT";
   if (cstMins < 360)  return "OVERNIGHT";
   if (cstMins < 480)  return "PRE_MARKET_EARLY";
   if (cstMins < 510)  return "PRE_MARKET_HOT";
-  if (cstMins < 585)  return "MARKET_OPEN";   // ← covers 8:30–9:45am CST
+  if (cstMins < 585)  return "MARKET_OPEN";
   if (cstMins < 900)  return "INTRADAY";
   return "WIND_DOWN";
 }
@@ -629,258 +640,102 @@ function getMarketStatus(cstMins, dow) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// AI STATUS — updated to reference 9:30am CST window
+// AI STATUS
 // ─────────────────────────────────────────────────────────────
 function getAIStatus(cstMins, dow) {
   if (dow === 0 || dow === 6) return {
     mode: "💤  WEEKEND — MONITORING ONLY",
     waiting: "No active trading. ES futures + overnight context only.",
-    nextAction: "Full monitoring resumes Monday 6:00am cst"
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
   };
-  if (cstMins < 360) return {
-    mode: "🌙  OVERNIGHT WATCH",
-    waiting: "Monitoring ES futures + overnight price action",
-    nextAction: "Pre-market coaching begins 6:00am cst"
+  if (cstMins < 240) return {
+    mode: "💤  OVERNIGHT — STANDBY",
+    waiting: "Monitoring ES futures overnight.",
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
   };
-  if (cstMins < 480) return {
-    mode: "👁️  PRE-MARKET WATCH",
-    waiting: "Overnight context forming — not yet actionable",
-    nextAction: "Emotional coaching ramps up at 8:00am cst"
+  if (cstMins < 505) return {
+    mode: "👁️  PRE-MARKET — WATCHING",
+    waiting: "Morning brief fires at 8:25am cst.",
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
   };
   if (cstMins < 510) return {
-    mode: "⚠️  PRE-OPEN COACHING — HIGH ALERT",
-    waiting: "ES trend + Bear Trap setup alignment",
-    nextAction: "Market opens 8:30am cst — STAY PATIENT · WATCH FOR TRAP"
+    mode: "🔔  MORNING BRIEF — IMMINENT",
+    waiting: "Generating morning brief now...",
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
   };
   if (cstMins < 570) return {
-    mode: "🪤  BEAR TRAP WATCH — ACTIVE",
-    waiting: "Flush → volume stall → momentum flip sequence",
-    nextAction: "Active window until 9:30am cst · DO NOT buy during flush"
-  };
-  if (cstMins < 585) return {
-    mode: "⚡  BEAR TRAP — LATE WINDOW",
-    waiting: "Late flip signal or invalidation incoming",
-    nextAction: "Critical window closes 9:30am cst — or sooner if conditions fail"
+    mode: "🪤  BEAR TRAP — ACTIVE",
+    waiting: "Monitoring flush → stall → flip pattern.",
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
   };
   if (cstMins < 900) return {
-    mode: "📈  INTRADAY MONITOR",
-    waiting: "Intraday price action + momentum",
-    nextAction: "EOD brief fires at 3:00pm cst"
+    mode: "📊  INTRADAY — TRACKING",
+    waiting: "Briefings every 30 min. Watching key levels.",
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
+  };
+  if (cstMins < 960) return {
+    mode: "🏁  EOD — GRADING",
+    waiting: "Grading morning brief accuracy.",
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
   };
   return {
-    mode: "📊  EOD WIND-DOWN",
-    waiting: "Day summary + signal accuracy review",
-    nextAction: "Overnight watch begins · Next active ~6:00am cst"
+    mode: "🔒  AFTER HOURS — STANDBY",
+    waiting: "Session closed. Overnight monitoring begins.",
+    nextBrief: getNextBriefTimeStr(cstMins, dow)
   };
 }
 
 // ─────────────────────────────────────────────────────────────
-// ES ALIGNMENT
-// ─────────────────────────────────────────────────────────────
-function getESAlignmentStatus(esData) {
-  if (!esData) return {
-    label:  "❓  UNKNOWN — No ES Data",
-    reason: "ES futures data unavailable. Cannot assess Bear Trap alignment.",
-    action: "Proceed with caution. Check data connection.",
-    color:  DB.TXT_DIM
-  };
-  var trend = esData.trend;
-  var pct   = esData.changePct;
-
-  if (trend === "FADING" && pct < -ES_ALIGN.VOID_DROP_PCT) return {
-    label:  "❌  VOID — Strategy Off Today",
-    reason: "ES down " + Math.abs(pct).toFixed(2) + "% and FADING hard. Real distribution, not a manufactured flush.",
-    action: "SKIP Bear Trap today. Do NOT buy calls. Wait for a cleaner setup.",
-    color:  DB.TXT_RED
-  };
-  if (trend === "CLIMBING" && pct > ES_ALIGN.CAUTION_RISE_PCT) return {
-    label:  "🚫  CAUTION — Flush May Follow Through",
-    reason: "ES up " + pct.toFixed(2) + "% and CLIMBING. Flush here could be real selling.",
-    action: "Reduce conviction. Require >80% confidence. Smaller size.",
-    color:  DB.TXT_ORANGE
-  };
-  if (trend === "FLAT" && pct < -ES_ALIGN.MONITOR_PCT) return {
-    label:  "⚠️  MONITOR — Ambiguous Setup",
-    reason: "ES flat but " + Math.abs(pct).toFixed(2) + "% below overnight high. OH tag not confirmed.",
-    action: "Watch for ES recovery toward overnight high before open.",
-    color:  DB.TXT_GOLD
-  };
-  if (trend === "FADING") return {
-    label:  "✅  ALIGNED — Classic Bear Trap Setup",
-    reason: "ES FADING from overnight high (" + pct.toFixed(2) + "%). Textbook setup conditions present.",
-    action: "Stay ready. Watch for: flush in first 15 min → stall → flip. Enter calls on flip ONLY.",
-    color:  DB.TXT_GREEN
-  };
-  return {
-    label:  "✅  ALIGNED — ES Flat Near Highs",
-    reason: "ES FLAT (" + pct.toFixed(2) + "%). Consolidating near highs — valid Bear Trap precondition.",
-    action: "Setup live. Watch for morning flush. Require >65% confidence before entering calls.",
-    color:  DB.TXT_GREEN
-  };
-}
-
-// ─────────────────────────────────────────────────────────────
-// FALLBACK BRIEF TEXT
-// ─────────────────────────────────────────────────────────────
-function buildFallbackBriefText(esData, cst, cstMins, dow, nextBriefStr) {
-  var timeStr  = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
-  var esStatus = esData
-    ? "ES " + (esData.changePct >= 0 ? "+" : "") + esData.changePct.toFixed(2) + "% · " + esData.trend
-    : "ES data loading";
-  var mode = getDashboardBriefMode(cstMins, dow);
-
-  if (dow === 0 || dow === 6)
-    return "Markets are closed — it's the weekend. " + timeStr + " cst.\n\n" + esStatus + ". Nothing actionable. System is watching.\n\nNext briefing: " + nextBriefStr;
-  if (mode === "OVERNIGHT")
-    return "Markets are closed. It is " + timeStr + " cst.\n\n" + esStatus + ". Overnight — nothing to act on. System is watching.\n\nNext briefing: " + nextBriefStr;
-  if (mode === "PRE_MARKET_EARLY")
-    return "Pre-market is underway. It is " + timeStr + " cst.\n\n" + esStatus + ". Market opens at 8:30am cst. Do not make any trades yet.\n\nNext briefing: " + nextBriefStr;
-  if (mode === "PRE_MARKET_HOT")
-    return "Market opens soon. It is " + timeStr + " cst.\n\n" + esStatus + ". Danger zone for impulse trades. Breathe. Watch for the Bear Trap — do NOT jump in at open.\n\nNext briefing: " + nextBriefStr;
-  if (mode === "MARKET_OPEN")
-    return "Market is open. " + timeStr + " cst — Bear Trap window is ACTIVE until 9:30am cst.\n\n" + esStatus + ". Watch flush → stall → flip. Do not chase. Window closes early on ES VOID or VIX FEAR.\n\nNext briefing: " + nextBriefStr;
-  return "Market open. " + timeStr + " cst.\n\n" + esStatus + ". Intraday session underway.\n\nNext briefing: " + nextBriefStr;
-}
-
-// ─────────────────────────────────────────────────────────────
-// GEMINI CALL
-// ─────────────────────────────────────────────────────────────
-function callGeminiForDashboardBrief(data, esData, vixData, cst, cstMins, dow) {
-  try {
-    var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
-    if (!apiKey) return null;
-
-    var prompt = buildDashboardBriefPrompt(data, esData, vixData, cst, cstMins, dow);
-    var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
-    var payload = JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 200, temperature: 0.6 }
-    });
-    var resp = UrlFetchApp.fetch(url, {
-      method: "post", contentType: "application/json",
-      payload: payload, muteHttpExceptions: true
-    });
-    if (resp.getResponseCode() !== 200) return null;
-    var json = JSON.parse(resp.getContentText());
-    return json.candidates
-        && json.candidates[0]
-        && json.candidates[0].content
-        && json.candidates[0].content.parts
-        && json.candidates[0].content.parts[0]
-         ? json.candidates[0].content.parts[0].text.trim()
-         : null;
-  } catch (e) {
-    Logger.log("callGeminiForDashboardBrief ERROR: " + e.message);
-    return null;
-  }
-}
-
-function buildDashboardBriefPrompt(data, esData, vixData, cst, cstMins, dow) {
-  var price    = data    ? "$" + data.price.toFixed(2) : "unknown";
-  var pctChg   = data    ? (data.changePct >= 0 ? "+" : "") + data.changePct.toFixed(2) + "%" : "unknown";
-  var esTrend  = esData  ? esData.trend : "UNKNOWN";
-  var esChgPct = esData  ? esData.changePct.toFixed(2) + "%" : "unknown";
-  var vixVal   = vixData ? vixData.price.toFixed(1) + " (" + vixData.regime + ")" : "unknown";
-  var timeStr  = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
-  var nextStr  = getNextBriefTimeStr(cstMins, dow);
-  var mode     = getDashboardBriefMode(cstMins, dow);
-  var al       = getESAlignmentStatus(esData);
-
-  var ctx = "You are a calm, direct trading coach. The user trades SPY options using the Bear Trap Open strategy — watching for a fake morning selloff then buying calls when the trap springs. They tend to trade impulsively before open. Active window: 8:30–9:30am cst (closes early on ES VOID or VIX FEAR).\n\n" +
-    "Time: " + timeStr + " cst\nSPY: " + price + " (" + pctChg + ")\nES: " + esTrend + " (" + esChgPct + ")\nVIX: " + vixVal + "\nAlignment: " + al.label + "\nNext update: " + nextStr + "\n\n";
-
-  var instr = "";
-  if (mode === "OVERNIGHT" || dow === 0 || dow === 6)
-    instr = "2-3 sentences: overnight context, ES summary, what to watch. Calm. End: 'Next update: " + nextStr + "'.";
-  else if (mode === "PRE_MARKET_EARLY")
-    instr = "2-3 sentences: overnight read, no trading yet, get focused. End: 'Next update: " + nextStr + "'.";
-  else if (mode === "PRE_MARKET_HOT")
-    instr = "3-4 sentences of firm emotional coaching: don't jump in, watch for Bear Trap flush, stay patient. Personal and direct. End: 'Next update: " + nextStr + "'.";
-  else if (mode === "MARKET_OPEN")
-    instr = "3 sentences: quick ES/SPY read, Bear Trap conditions check (8:30–9:30am window), patience coaching. End: 'Next update: " + nextStr + "'.";
-  else
-    instr = "2 sentences: intraday read + one tactical note. End: 'Next update: " + nextStr + "'.";
-
-  return ctx + "INSTRUCTION: " + instr + "\nOnly the briefing text. No labels or headers.";
-}
-
-// ─────────────────────────────────────────────────────────────
-// SHEET SETUP
+// SETUP DASHBOARD SHEET
 // ─────────────────────────────────────────────────────────────
 function setupDashboardSheet(ss) {
   if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
 
   var sheet = ss.getSheetByName(SHEET_DASHBOARD);
   if (!sheet) sheet = ss.insertSheet(SHEET_DASHBOARD);
+  sheet.setTabColor("#00bcd4");
 
-  sheet.setTabColor("#00e5ff");
-  sheet.clearContents();
-  sheet.clearFormats();
+  // Ensure 7 columns
+  if (sheet.getMaxColumns() < 7) sheet.insertColumnsAfter(sheet.getMaxColumns(), 7 - sheet.getMaxColumns());
 
-  while (sheet.getMaxColumns() < 7) sheet.insertColumnAfter(sheet.getMaxColumns());
-
-  sheet.setColumnWidth(DC.GAP_L,  10);
+  // Column widths
+  sheet.setColumnWidth(DC.GAP_L,   8);
   sheet.setColumnWidth(DC.CARD_L, 310);
-  sheet.setColumnWidth(DC.GAP_M,  10);
+  sheet.setColumnWidth(DC.GAP_M,   8);
   sheet.setColumnWidth(DC.CARD_R, 310);
-  sheet.setColumnWidth(DC.GAP_R,  10);
-  sheet.setColumnWidth(DC.WIDE,   10);
-  sheet.setColumnWidth(DC.GAP_END, 10);
+  sheet.setColumnWidth(DC.GAP_R,   8);
+  sheet.setColumnWidth(DC.WIDE,   310);
+  sheet.setColumnWidth(DC.GAP_END,  8);
 
-  sheet.getRange(1, 1, 50, 7).setBackground(DB.BG_SHEET);
+  // Ensure enough rows
+  if (sheet.getMaxRows() < 40) sheet.insertRowsAfter(sheet.getMaxRows(), 40 - sheet.getMaxRows());
 
-  // ── Row 1: Banner ────────────────────────────────────────
+  // Base background
+  sheet.getRange(1, 1, 40, 7).setBackground(DB.BG_SHEET);
+
+  // Banner
   sheet.getRange(DR.BANNER, 1, 1, 7).merge()
-    .setValue("  ⚡  S P Y   M I S S I O N   C O N T R O L")
-    .setBackground(DB.BG_BANNER)
-    .setFontColor(DB.TXT_BANNER)
-    .setFontWeight("bold")
-    .setFontSize(16)
-    .setFontFamily("Georgia")
-    .setHorizontalAlignment("left")
-    .setVerticalAlignment("middle");
-  sheet.setRowHeight(DR.BANNER, 50);
+    .setValue("🖥️  MISSION CONTROL  ·  SPY TRACKER")
+    .setBackground(DB.BG_BANNER).setFontColor(DB.TXT_BANNER)
+    .setFontWeight("bold").setFontSize(16).setFontFamily("Trebuchet MS")
+    .setHorizontalAlignment("center").setVerticalAlignment("middle");
+  sheet.setRowHeight(DR.BANNER, 36);
 
-  // ── Row 2: Subtitle ──────────────────────────────────────
+  // Subtitle placeholder
   sheet.getRange(DR.SUBTITLE, 1, 1, 7).merge()
-    .setValue("initializing...")
-    .setBackground(DB.BG_BANNER)
-    .setFontColor(DB.TXT_DIM)
-    .setFontSize(8)
-    .setHorizontalAlignment("center");
-  sheet.setRowHeight(DR.SUBTITLE, 18);
+    .setValue("loading...")
+    .setFontColor(DB.TXT_DIM).setFontSize(8)
+    .setHorizontalAlignment("center").setBackground(DB.BG_BANNER);
+  sheet.setRowHeight(DR.SUBTITLE, 16);
 
-  // ── Gap row 3 ─────────────────────────────────────────────
-  sheet.getRange(DR.GAP_1, 1, 1, 7).setBackground(DB.BG_SHEET);
-  sheet.setRowHeight(DR.GAP_1, 10);
-
-  var cardRows = [];
-  for (var r = DR.SPY_HDR; r <= DR.SPY_PAD; r++) cardRows.push(r);
-  for (var r = DR.AI_HDR;  r <= DR.AI_PAD;  r++) cardRows.push(r);
-  for (var r = DR.ES_HDR;  r <= DR.ES_ACTION; r++) cardRows.push(r);
-  for (var r = DR.BR_HDR;  r <= DR.BR_PAD;  r++) cardRows.push(r);
-
-  for (var i = 0; i < cardRows.length; i++) {
-    var rr = cardRows[i];
-    sheet.getRange(rr, DC.GAP_L).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, DC.GAP_M).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, DC.GAP_R).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, DC.WIDE).setBackground(DB.BG_SHEET);
-    sheet.getRange(rr, DC.GAP_END).setBackground(DB.BG_SHEET);
-  }
-
-  sheet.getRange(DR.GAP_2,  1, 1, 7).setBackground(DB.BG_SHEET);
-  sheet.getRange(DR.GAP_3,  1, 1, 7).setBackground(DB.BG_SHEET);
-  sheet.getRange(DR.GAP_4,  1, 1, 7).setBackground(DB.BG_SHEET);
-  sheet.getRange(DR.GAP_5,  1, 1, 7).setBackground(DB.BG_SHEET);
-  sheet.setRowHeight(DR.GAP_2, 12);
-  sheet.setRowHeight(DR.GAP_3, 12);
-  sheet.setRowHeight(DR.GAP_4, 12);
-  sheet.setRowHeight(DR.GAP_5, 12);
+  // Gap rows
+  [DR.GAP_1, DR.GAP_2, DR.GAP_3, DR.GAP_4, DR.GAP_5].forEach(function(r) {
+    sheet.getRange(r, 1, 1, 7).setBackground(DB.BG_GAP);
+    sheet.setRowHeight(r, 6);
+  });
 
   sheet.setFrozenRows(2);
-
-  Logger.log("Dashboard (card layout) setup complete.");
+  Logger.log("Dashboard sheet setup complete.");
   return sheet;
 }
 
@@ -893,13 +748,7 @@ function setupDashboardSheetFromMenu() {
   SpreadsheetApp.getUi().alert(
     "🖥️ MISSION CONTROL\n\n" +
     "✅ Dashboard created!\n\n" +
-    "LAYOUT:\n" +
-    "  Row 1: SPY Price card  |  Market Status card\n" +
-    "  Row 2: AI Status card  |  ES Futures card\n" +
-    "  Row 3: Bear Trap Alignment (full width)\n" +
-    "  Row 4: AI Briefing terminal (full width)\n\n" +
-    "Bear Trap active window: 8:30–9:30am cst\n" +
-    "Closes early on ES VOID or VIX FEAR.\n\n" +
+    "Bear Trap active window: 8:30–9:30am cst\n\n" +
     "Run 'Refresh Dashboard Now' to populate."
   );
 }
