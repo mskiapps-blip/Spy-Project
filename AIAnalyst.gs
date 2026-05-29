@@ -10,7 +10,7 @@
 //         Get free key: https://aistudio.google.com/app/apikey
 // ============================================================
 
-var GEMINI_MODEL    = "gemini-2.5-flash-preview-05-20";
+var GEMINI_MODEL    = "gemini-2.0-flash";
 var GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/"
                     + GEMINI_MODEL + ":generateContent";
 
