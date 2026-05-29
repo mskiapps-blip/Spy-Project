@@ -588,7 +588,7 @@ function generateDashboardBrief(data, esData, vixData, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 200, temperature: 0.4 }
+      generationConfig: { maxOutputTokens: 2000, temperature: 0.4 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
