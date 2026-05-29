@@ -30,3 +30,21 @@ function testGemini() {
     }
   });
 }
+
+function testGeminiSingle() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/"
+          + "gemini-2.0-flash:generateContent?key=" + apiKey;
+  var payload = JSON.stringify({
+    contents: [{ parts: [{ text: "Say OK" }] }],
+    generationConfig: { maxOutputTokens: 5 }
+  });
+  var resp = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    payload: payload,
+    muteHttpExceptions: true
+  });
+  Logger.log("Response code: " + resp.getResponseCode());
+  Logger.log("Body: " + resp.getContentText().substring(0, 200));
+}
