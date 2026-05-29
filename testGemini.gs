@@ -48,3 +48,22 @@ function testGeminiSingle() {
   Logger.log("Response code: " + resp.getResponseCode());
   Logger.log("Body: " + resp.getContentText().substring(0, 200));
 }
+
+function listAvailableModels() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  var url    = "https://generativelanguage.googleapis.com/v1beta/models?key=" + apiKey;
+  
+  var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  Logger.log("Response code: " + resp.getResponseCode());
+  
+  var json   = JSON.parse(resp.getContentText());
+  var models = json.models || [];
+  
+  models.forEach(function(m) {
+    // Only show models that support generateContent
+    var methods = m.supportedGenerationMethods || [];
+    if (methods.indexOf("generateContent") !== -1) {
+      Logger.log("✅ " + m.name + " — " + (m.displayName || ""));
+    }
+  });
+}
