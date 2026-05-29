@@ -86,7 +86,7 @@ function setupBearTrapSheet(ss) {
   }
 
   // ── Row 1: Banner ─────────────────────────────────────────
-  sheet.appendRow(["🪤  Bear Trap Open  ·  Pattern Confidence System  ·  Active 8:30 – 9:15 CST"]);
+  sheet.appendRow(["🪤  Bear Trap Open  ·  Pattern Confidence System  ·  Active 8:30 – 9:30 CST  ·  Closes early if invalidated"]);
   sheet.getRange(1, 1, 1, BT_HEADERS.length).merge()
     .setBackground(BT_COLOR.BG_BANNER)
     .setFontColor(BT_COLOR.BAN_TEXT)
@@ -98,7 +98,7 @@ function setupBearTrapSheet(ss) {
   sheet.setRowHeight(1, 42);
 
   // ── Row 2: Pattern legend ─────────────────────────────────
-  sheet.appendRow(["The Pattern:  Overnight high tagged  →  Fast flush on weak volume  →  Stall  →  Flip  →  🚀 Rip.  Watch the 🚨 Trap Alert column — a red row means DO NOT BUY PUTS."]);
+  sheet.appendRow(["The Pattern:  Overnight high tagged  →  Fast flush on weak volume  →  Stall  →  Flip  →  🚀 Rip.  Watch the 🚨 Trap Alert column — a red row means DO NOT BUY PUTS.  Window closes early on ES VOID or VIX FEAR."]);
   sheet.getRange(2, 1, 1, BT_HEADERS.length).merge()
     .setBackground(BT_COLOR.BG_LEGEND)
     .setFontColor(BT_COLOR.BAN_SUB)
@@ -141,9 +141,10 @@ function addBearTrapHeaderNotes(sheet) {
   sheet.getRange(h, BTC.TIME).setNote(
     "⏱ TIME (CST)\n─────────────────────\n" +
     "Tick time in Central Standard Time (12-hour format).\n\n" +
-    "Active window: 8:30–9:15 CST.\n" +
+    "Active window: 8:30–9:30 CST.\n" +
+    "Window may close early if ES VOID, VIX FEAR, or pattern fails.\n" +
     "Pre-open row appears before 8:30.\n" +
-    "EOD Brief row appears at ~3:00 CST."
+    "EOD Brief row appears at ~3:00pm CST."
   );
 
   sheet.getRange(h, BTC.PRICE).setNote(
@@ -173,16 +174,21 @@ function addBearTrapHeaderNotes(sheet) {
     "  ✅ ENTER CALLS NOW      — Row turns GREEN\n" +
     "     Score ≥75%, flip confirmed. Wait for Target Price cross.\n\n" +
     "  🚀 RIP CONFIRMED        — Bright green\n" +
-    "     Pattern played. Manage your position."
+    "     Pattern played. Manage your position.\n\n" +
+    "INVALIDATION:\n" +
+    "  🛑 INVALIDATED          — Dark red row\n" +
+    "     ES VOID, VIX FEAR, or pattern collapsed.\n" +
+    "     Window closed early. No trade today."
   );
 
   sheet.getRange(h, BTC.PHASE).setNote(
     "📍 PHASE\n─────────────────────\n" +
-    "🌅 PRE-OPEN  — Before 8:30 CST\n" +
+    "🌅 PRE-OPEN  — Before 8:30am CST\n" +
     "📉 FLUSH     — Red candles, price falling from open\n" +
     "⏸ STALL     — Flush losing momentum, volume drying up\n" +
     "⚡ FLIP      — First green tick after flush\n" +
-    "🚀 RIP       — Confirmed reversal\n\n" +
+    "🚀 RIP       — Confirmed reversal\n" +
+    "🛑 INVALIDATED — Window closed early\n\n" +
     "STALL → FLIP is the entry zone. Never enter during FLUSH."
   );
 
@@ -190,7 +196,7 @@ function addBearTrapHeaderNotes(sheet) {
     "📉 FLUSH DEPTH\n─────────────────────\n" +
     "How far SPY has dropped from its POST-OPEN LOCAL HIGH (%).\n\n" +
     "⚠️ NOT measured from day open — measured from the highest\n" +
-    "price reached after 8:30 CST. This handles the common case\n" +
+    "price reached after 8:30am CST. This handles the common case\n" +
     "where SPY chops up for 10-15 min before the flush begins.\n\n" +
     "Example: Open $585.00 → chop to $585.80 → flush to $584.30\n" +
     "  Old system saw: −0.12% (too shallow, ignored ❌)\n" +
@@ -207,7 +213,7 @@ function addBearTrapHeaderNotes(sheet) {
     "⚡ FLUSH SPEED\n─────────────────────\n" +
     "How fast the flush happened, measured as % drop per 5-min bar.\n\n" +
     "⚠️ Timing starts when the flush BEGINS (from the local high),\n" +
-    "NOT from the 8:30 CST open. A 15-min pre-flush chop does not\n" +
+    "NOT from the 8:30am CST open. A 15-min pre-flush chop does not\n" +
     "dilute this reading.\n\n" +
     "⚡ FAST   ≥0.15%/bar — Panic selling, retail stops hit.\n" +
     "              Institutions not involved. Strongest trap signal.\n" +
@@ -239,7 +245,8 @@ function addBearTrapHeaderNotes(sheet) {
     "🟡 ELEVATED VIX 22–28 — Nervous market. Traps still happen\n" +
     "                        but flush can overshoot. Neutral.\n\n" +
     "🔴 FEAR     VIX > 28  — Real fear. Morning flush may follow\n" +
-    "                        through. −15% confidence penalty.\n\n" +
+    "                        through. −15% confidence penalty.\n" +
+    "                        ⚠️ Also triggers early window invalidation.\n\n" +
     "Rule: If VIX spikes above 28 overnight, skip the setup."
   );
 
@@ -256,8 +263,10 @@ function addBearTrapHeaderNotes(sheet) {
     "              the flush may not be a trap — it could be\n" +
     "              real profit-taking or a trend continuation.\n" +
     "              −10% confidence penalty.\n\n" +
+    "🛑 FADING HARD (>1%) — ES VOID. Real distribution.\n" +
+    "              Triggers early window invalidation. Skip today.\n\n" +
     "The ideal Bear Trap setup: ES tagged overnight high,\n" +
-    "then FADING before 8:30 CST open."
+    "then FADING before 8:30am CST open."
   );
 
   sheet.getRange(h, BTC.CONFIDENCE).setNote(
@@ -288,7 +297,8 @@ function addBearTrapHeaderNotes(sheet) {
     "👀 WATCH      — Score ≥60%, flip detected\n" +
     "✅ BUY CALLS  — Score ≥75%, flip confirmed\n" +
     "⚠️ MISSED      — Rip without clean flip signal\n" +
-    "❌ NOT TODAY  — No matching pattern\n\n" +
+    "❌ NOT TODAY  — No matching pattern\n" +
+    "❌ NO TRADE TODAY — Window invalidated early\n\n" +
     "NEVER buy calls during FLUSH phase.\n" +
     "Wait for the flip + price to clear Target Price."
   );
@@ -323,7 +333,7 @@ function addBearTrapHeaderNotes(sheet) {
     "  • Confidence crosses 50% or 75%\n" +
     "  • BUY CALLS signal issued\n" +
     "  • First tick of session\n\n" +
-    "Budget: max 8 calls during active window + 1 EOD brief.\n" +
+    "Budget: max 10 calls during active window + 1 EOD brief.\n" +
     "Silent ticks = nothing changed worth noting.\n\n" +
     "EOD row shows total AI calls used that day."
   );
@@ -342,8 +352,10 @@ function setupBearTrapSheetFromMenu() {
     "• 😨 VIX regime check (NORMAL = +10% confidence)\n" +
     "• 📡 ES Futures trend (FADING = +15% confidence)\n" +
     "• ⚡ Flush speed scoring (FAST = +10% confidence)\n" +
-    "• 🤖 AI memos fire only on phase changes (saves quota)\n\n" +
-    "Active: 8:30–9:15 CST  ·  EOD brief: 3:00 CST\n" +
+    "• 🤖 AI memos fire only on phase changes (saves quota)\n" +
+    "• 🛑 Early invalidation on ES VOID or VIX FEAR\n\n" +
+    "Active: 8:30–9:30am CST  ·  EOD brief: 3:00pm CST\n" +
+    "Window closes early if ES fades hard, VIX > 28, or pattern fails.\n" +
     "Runs inside your existing 5-minute trigger."
   );
 }

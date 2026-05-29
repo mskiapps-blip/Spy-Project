@@ -27,44 +27,31 @@ var SHEET_DASHBOARD = "🖥️ DASHBOARD";
 // PALETTE
 // ─────────────────────────────────────────────────────────────
 var DB = {
-  // Sheet base
-  BG_SHEET:     "#0e0e1a",   // overall sheet background
-
-  // Banner
+  BG_SHEET:     "#0e0e1a",
   BG_BANNER:    "#070712",
   TXT_BANNER:   "#00e5ff",
   TXT_SUB:      "#2a2a55",
-
-  // Card backgrounds
-  BG_CARD:      "#13132a",   // card body
-  BG_GAP:       "#0e0e1a",   // gap columns/rows — same as sheet
-  BG_DIVIDER:   "#1a1a35",   // subtle inner divider rows
-
-  // Card header backgrounds (per section)
-  HDR_SPY:      "#001e3c",   // deep navy
-  HDR_MKT:      "#002918",   // deep forest green
-  HDR_AI:       "#1a0a30",   // deep purple
-  HDR_ES:       "#2a1800",   // deep amber
-  HDR_BRIEF:    "#1e0a00",   // deep orange-brown
-
-  // Card header text
-  TXT_HDR_SPY:  "#29b6f6",   // sky blue
-  TXT_HDR_MKT:  "#4caf50",   // green
-  TXT_HDR_AI:   "#ab47bc",   // purple
-  TXT_HDR_ES:   "#ffa726",   // amber
-  TXT_HDR_BRIEF:"#ff7043",   // orange
-
-  // Card accent left-border column color (1 col wide inside card)
+  BG_CARD:      "#13132a",
+  BG_GAP:       "#0e0e1a",
+  BG_DIVIDER:   "#1a1a35",
+  HDR_SPY:      "#001e3c",
+  HDR_MKT:      "#002918",
+  HDR_AI:       "#1a0a30",
+  HDR_ES:       "#2a1800",
+  HDR_BRIEF:    "#1e0a00",
+  TXT_HDR_SPY:  "#29b6f6",
+  TXT_HDR_MKT:  "#4caf50",
+  TXT_HDR_AI:   "#ab47bc",
+  TXT_HDR_ES:   "#ffa726",
+  TXT_HDR_BRIEF:"#ff7043",
   ACC_SPY:      "#0077bb",
   ACC_MKT:      "#005533",
   ACC_AI:       "#5500aa",
   ACC_ES:       "#aa6600",
   ACC_BRIEF:    "#cc3300",
-
-  // Value text
-  TXT_PRIMARY:  "#e8eaf6",   // big values
-  TXT_SECONDARY:"#7986cb",   // labels / sub-values
-  TXT_DIM:      "#3d3d6b",   // very dim metadata
+  TXT_PRIMARY:  "#e8eaf6",
+  TXT_SECONDARY:"#7986cb",
+  TXT_DIM:      "#3d3d6b",
   TXT_CYAN:     "#00e5ff",
   TXT_GREEN:    "#00e676",
   TXT_RED:      "#ff5252",
@@ -72,26 +59,23 @@ var DB = {
   TXT_ORANGE:   "#ff9100",
   TXT_PURPLE:   "#e040fb",
   TXT_SILVER:   "#90a4ae",
-
-  // Terminal (briefing)
   BG_TERM:      "#080810",
   TXT_TERM:     "#ffe082"
 };
 
 // ─────────────────────────────────────────────────────────────
 // COLUMN MAP
-// A=1 B=2 C=3 D=4 E=5 F=6 G=7 H=8
-//  gap  L-card  gap  R-card  gap  wide   gap  end
-//   1     2      3     4      5    6      7    8
+// A=1 B=2 C=3 D=4 E=5 F=6 G=7
+//  gap  L-card  gap  R-card  gap  wide  gap
 // ─────────────────────────────────────────────────────────────
 var DC = {
-  GAP_L:   1,   // 8px gap
-  CARD_L:  2,   // 310px — left card
-  GAP_M:   3,   // 8px gap
-  CARD_R:  4,   // 310px — right card
-  GAP_R:   5,   // 8px gap
-  WIDE:    6,   // 636px — full-width card (spans to col 6 only, cols 2-6 merged)
-  GAP_END: 7    // 8px end cap
+  GAP_L:   1,
+  CARD_L:  2,
+  GAP_M:   3,
+  CARD_R:  4,
+  GAP_R:   5,
+  WIDE:    6,
+  GAP_END: 7
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -101,8 +85,6 @@ var DR = {
   BANNER:      1,
   SUBTITLE:    2,
   GAP_1:       3,
-
-  // Row 1 of cards: SPY + Market
   SPY_HDR:     4,
   SPY_BIG:     5,
   SPY_CHANGE:  6,
@@ -111,8 +93,6 @@ var DR = {
   SPY_TIME:    9,
   SPY_PAD:     10,
   GAP_2:       11,
-
-  // Row 2 of cards: AI + ES
   AI_HDR:      12,
   AI_MODE:     13,
   AI_WATCH:    14,
@@ -120,8 +100,6 @@ var DR = {
   AI_NEXT:     16,
   AI_PAD:      17,
   GAP_3:       18,
-
-  // Full-width ES card
   ES_HDR:      19,
   ES_PRICE:    20,
   ES_ALIGN:    21,
@@ -130,12 +108,10 @@ var DR = {
   ES_ACTION:   24,
   ES_PAD:      25,
   GAP_4:       26,
-
-  // Full-width briefing card
   BR_HDR:      27,
   BR_META:     28,
-  BR_TEXT:     29,   // tall merged — the message
-  BR_PAD:      37,   // rows 29–36 consumed by tall merged cell
+  BR_TEXT:     29,
+  BR_PAD:      37,
   GAP_5:       38
 };
 
@@ -186,7 +162,6 @@ function runDashboardTick(data, now) {
     writeESCard(sheet, esData);
     writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldBrief);
 
-    // Subtitle
     var timeStr = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
     var dateStr = Utilities.formatDate(cst, "America/Chicago", "EEE MMM d, yyyy");
     sheet.getRange(DR.SUBTITLE, 1, 1, 7).merge()
@@ -201,10 +176,10 @@ function runDashboardTick(data, now) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD HELPER — writes a card header bar
+// CARD HELPERS
 // ─────────────────────────────────────────────────────────────
 function writeCardHeader(sheet, row, col, label, bgColor, txtColor, isWide) {
-  var span = isWide ? 5 : 1; // wide = cols 2-6, normal = single col
+  var span = isWide ? 5 : 1;
   if (isWide) {
     sheet.getRange(row, DC.CARD_L, 1, 5).merge()
       .setValue(label).setBackground(bgColor).setFontColor(txtColor)
@@ -219,10 +194,7 @@ function writeCardHeader(sheet, row, col, label, bgColor, txtColor, isWide) {
   sheet.setRowHeight(row, 28);
 }
 
-// Card body row — label on top left (small), value below
 function writeCardField(sheet, row, col, labelTxt, valueTxt, valueFg, valueSz, isMerged) {
-  // Write directly into the cell; label is set via note-style small text above value
-  // We use two sub-rows: label row + value row
   sheet.getRange(row, col).setValue(valueTxt)
     .setFontColor(valueFg || DB.TXT_PRIMARY)
     .setFontSize(valueSz || 12)
@@ -245,17 +217,14 @@ function writeSPYCard(sheet, data, cst) {
     var priceFg   = isUp ? DB.TXT_GREEN : DB.TXT_RED;
     var arrow     = isUp ? "▲" : "▼";
     var sign      = isUp ? "+" : "";
+    var col       = DC.CARD_L;
 
-    var col = DC.CARD_L;
-
-    // Header
     sheet.getRange(DR.SPY_HDR, col).setValue("  💰  SPY — LAST PRICE")
       .setBackground(DB.HDR_SPY).setFontColor(DB.TXT_HDR_SPY)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.SPY_HDR, 28);
 
-    // Big price
     sheet.getRange(DR.SPY_BIG, col)
       .setValue(price > 0 ? "$" + price.toFixed(2) : "—")
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_CYAN)
@@ -263,30 +232,24 @@ function writeSPYCard(sheet, data, cst) {
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.SPY_BIG, 44);
 
-    // Change row
     var changeStr = price > 0
       ? arrow + "  " + sign + change.toFixed(2) + "   (" + sign + changePct.toFixed(2) + "%)"
       : "—";
-    sheet.getRange(DR.SPY_CHANGE, col)
-      .setValue(changeStr)
+    sheet.getRange(DR.SPY_CHANGE, col).setValue(changeStr)
       .setBackground(DB.BG_CARD).setFontColor(priceFg)
       .setFontSize(14).setFontWeight("bold")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.SPY_CHANGE, 30);
 
-    // Divider
-    sheet.getRange(DR.SPY_DIV, col).setValue("")
-      .setBackground(DB.BG_DIVIDER);
+    sheet.getRange(DR.SPY_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
     sheet.setRowHeight(DR.SPY_DIV, 2);
 
-    // Prev close
     sheet.getRange(DR.SPY_PREV, col)
       .setValue(prevClose > 0 ? "prev close  $" + prevClose.toFixed(2) : "—")
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
       .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.SPY_PREV, 22);
 
-    // Timestamp
     var timeStr = Utilities.formatDate(cst, "America/Chicago", "h:mm a").toLowerCase();
     sheet.getRange(DR.SPY_TIME, col)
       .setValue("as of  " + timeStr + " cst")
@@ -294,7 +257,6 @@ function writeSPYCard(sheet, data, cst) {
       .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.SPY_TIME, 18);
 
-    // Padding
     sheet.getRange(DR.SPY_PAD, col).setValue("").setBackground(DB.BG_CARD);
     sheet.setRowHeight(DR.SPY_PAD, 10);
 
@@ -309,39 +271,31 @@ function writeMarketCard(sheet, cstMins, dow) {
     var s   = getMarketStatus(cstMins, dow);
     var col = DC.CARD_R;
 
-    // Header
     sheet.getRange(DR.SPY_HDR, col).setValue("  🏛️  MARKET STATUS")
       .setBackground(DB.HDR_MKT).setFontColor(DB.TXT_HDR_MKT)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
 
-    // Status label
     sheet.getRange(DR.SPY_BIG, col).setValue(s.label)
       .setBackground(DB.BG_CARD).setFontColor(s.color)
       .setFontSize(16).setFontWeight("bold")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
 
-    // Countdown
     sheet.getRange(DR.SPY_CHANGE, col).setValue(s.countdown)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
       .setFontSize(13).setFontWeight("bold")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
 
-    // Divider
     sheet.getRange(DR.SPY_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
 
-    // Session
     sheet.getRange(DR.SPY_PREV, col).setValue(s.session)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
       .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
 
-    // Next event
     sheet.getRange(DR.SPY_TIME, col).setValue(s.next)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
-      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle")
-      .setWrap(true);
+      .setFontSize(8).setHorizontalAlignment("left").setVerticalAlignment("middle").setWrap(true);
 
-    // Padding
     sheet.getRange(DR.SPY_PAD, col).setValue("").setBackground(DB.BG_CARD);
 
   } catch (e) { Logger.log("writeMarketCard ERROR: " + e.message); }
@@ -400,7 +354,7 @@ function writeESCard(sheet, esData) {
     var esChg   = esData ? (esData.changePct >= 0 ? "+" : "") + esData.changePct.toFixed(2) + "%" : "—";
     var esTrend = esData ? esData.trend : "—";
     var esFg    = esData ? (esData.changePct >= 0 ? DB.TXT_GREEN : DB.TXT_RED) : DB.TXT_DIM;
-    var trendFg = esTrend === "FADING" ? DB.TXT_GREEN
+    var trendFg = esTrend === "FADING"   ? DB.TXT_GREEN
                 : esTrend === "CLIMBING" ? DB.TXT_RED : DB.TXT_GOLD;
 
     sheet.getRange(DR.AI_HDR, col).setValue("  📡  ES FUTURES")
@@ -408,7 +362,6 @@ function writeESCard(sheet, esData) {
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
 
-    // Price + change on same row
     sheet.getRange(DR.AI_MODE, col)
       .setValue(esPrice + "   " + esChg + "   " + esTrend)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_PRIMARY)
@@ -439,49 +392,42 @@ function writeESDetailCard(sheet, esData) {
   try {
     var al = getESAlignmentStatus(esData);
 
-    // Header (wide)
     sheet.getRange(DR.ES_HDR, DC.CARD_L, 1, 3).merge()
-      .setValue("  🎯  BEAR TRAP ALIGNMENT — FULL ANALYSIS")
+      .setValue("  📡  ES ALIGNMENT — BEAR TRAP SETUP CHECK")
       .setBackground(DB.HDR_ES).setFontColor(DB.TXT_HDR_ES)
       .setFontWeight("bold").setFontSize(10).setFontFamily("Trebuchet MS")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.ES_HDR, 28);
 
-    // Alignment label
     sheet.getRange(DR.ES_PRICE, DC.CARD_L, 1, 3).merge()
       .setValue(al.label)
       .setBackground(DB.BG_CARD).setFontColor(al.color)
-      .setFontSize(15).setFontWeight("bold")
+      .setFontSize(14).setFontWeight("bold")
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.ES_PRICE, 32);
 
-    // Signal reason
     sheet.getRange(DR.ES_ALIGN, DC.CARD_L, 1, 3).merge()
-      .setValue("SIGNAL:  " + al.reason)
+      .setValue(al.reason)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
       .setFontSize(9).setWrap(true)
       .setHorizontalAlignment("left").setVerticalAlignment("top");
-    sheet.setRowHeight(DR.ES_ALIGN, 40);
+    sheet.setRowHeight(DR.ES_ALIGN, 38);
 
-    // Divider
     sheet.getRange(DR.ES_DIV, DC.CARD_L, 1, 3).merge()
       .setValue("").setBackground(DB.BG_DIVIDER);
     sheet.setRowHeight(DR.ES_DIV, 2);
 
-    // Playbook
     sheet.getRange(DR.ES_SIGNAL, DC.CARD_L, 1, 3).merge()
-      .setValue("PLAYBOOK:  " + al.action)
+      .setValue("▶  " + al.action)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_GOLD)
       .setFontSize(9).setFontWeight("bold").setWrap(true)
-      .setHorizontalAlignment("left").setVerticalAlignment("top");
-    sheet.setRowHeight(DR.ES_SIGNAL, 36);
+      .setHorizontalAlignment("left").setVerticalAlignment("middle");
+    sheet.setRowHeight(DR.ES_SIGNAL, 30);
 
-    // Padding
     sheet.getRange(DR.ES_ACTION, DC.CARD_L, 1, 3).merge()
       .setValue("").setBackground(DB.BG_CARD);
     sheet.setRowHeight(DR.ES_ACTION, 8);
 
-    // Fill gap cols for this section
     for (var r = DR.ES_HDR; r <= DR.ES_ACTION; r++) {
       sheet.getRange(r, DC.GAP_L).setBackground(DB.BG_GAP);
       sheet.getRange(r, DC.GAP_M).setBackground(DB.BG_GAP);
@@ -519,7 +465,6 @@ function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldB
 
     var postedStr = briefTime ? briefTime + " cst" : "—";
 
-    // Header
     sheet.getRange(DR.BR_HDR, DC.CARD_L, 1, 3).merge()
       .setValue("  🧠  AI MISSION BRIEFING")
       .setBackground(DB.HDR_BRIEF).setFontColor(DB.TXT_HDR_BRIEF)
@@ -527,14 +472,12 @@ function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldB
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.BR_HDR, 28);
 
-    // Meta row — posted + next
     sheet.getRange(DR.BR_META, DC.CARD_L, 1, 3).merge()
       .setValue("posted  " + postedStr + "          next update  " + nextBriefStr)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_SECONDARY)
       .setFontSize(9).setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.BR_META, 22);
 
-    // Big terminal text
     sheet.getRange(DR.BR_TEXT, DC.CARD_L, 8, 3).merge()
       .setValue(briefText)
       .setBackground(DB.BG_TERM).setFontColor(DB.TXT_TERM)
@@ -545,12 +488,10 @@ function writeBriefCard(sheet, data, esData, vixData, cst, cstMins, dow, shouldB
       sheet.setRowHeight(r2, 10);
     }
 
-    // Padding
     sheet.getRange(DR.BR_PAD, DC.CARD_L, 1, 3).merge()
       .setValue("").setBackground(DB.BG_CARD);
     sheet.setRowHeight(DR.BR_PAD, 10);
 
-    // Fill gap cols
     for (var rb = DR.BR_HDR; rb <= DR.BR_PAD; rb++) {
       sheet.getRange(rb, DC.GAP_L).setBackground(DB.BG_GAP);
       sheet.getRange(rb, DC.GAP_M).setBackground(DB.BG_GAP);
@@ -606,12 +547,17 @@ function getNextBriefTimeStr(cstMins, dow) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// getDashboardBriefMode
+// 570 = 9:30am CST (Bear Trap active window end)
+// 585 = 9:45am CST (trailing buffer for LATE WINDOW label)
+// ─────────────────────────────────────────────────────────────
 function getDashboardBriefMode(cstMins, dow) {
   if (dow === 0 || dow === 6) return "OVERNIGHT";
   if (cstMins < 360)  return "OVERNIGHT";
   if (cstMins < 480)  return "PRE_MARKET_EARLY";
   if (cstMins < 510)  return "PRE_MARKET_HOT";
-  if (cstMins < 570)  return "MARKET_OPEN";
+  if (cstMins < 585)  return "MARKET_OPEN";   // ← covers 8:30–9:45am CST
   if (cstMins < 900)  return "INTRADAY";
   return "WIND_DOWN";
 }
@@ -646,55 +592,49 @@ function getMarketStatus(cstMins, dow) {
   if (dow === 0 || dow === 6) {
     return {
       label:     "CLOSED  ·  " + (dow === 6 ? "Saturday" : "Sunday"),
-      session:   "Weekend — markets closed",
-      countdown: "",
-      next:      "Pre-market Monday ~3:00am cst  ·  Open 8:30am cst",
+      countdown: "Markets reopen Monday 8:30am cst",
+      session:   "Weekend — no active session",
+      next:      "Pre-market opens Monday 4:00am cst",
       color:     DB.TXT_DIM
     };
   }
-  if (cstMins >= 180 && cstMins < 510) {
-    return {
-      label:     "PRE-MARKET  🌅",
-      session:   "Pre-market session active",
-      countdown: "Opens in " + (510 - cstMins) + " min",
-      next:      "Regular session opens 8:30am cst",
-      color:     DB.TXT_ORANGE
-    };
-  }
-  if (cstMins >= 510 && cstMins < 900) {
-    return {
-      label:     "MARKET OPEN  🟢",
-      session:   "Regular trading session",
-      countdown: "Closes in " + (900 - cstMins) + " min",
-      next:      "Market closes 3:00pm cst",
-      color:     DB.TXT_GREEN
-    };
-  }
-  if (cstMins >= 900 && cstMins < 1260) {
-    return {
-      label:     "AFTER HOURS  🌙",
-      session:   "Extended / after-hours session",
-      countdown: "",
-      next:      "Pre-market opens ~3:00am cst tomorrow",
-      color:     DB.TXT_PURPLE
-    };
-  }
+  if (cstMins < 240) return {
+    label: "🌙  OVERNIGHT", countdown: "Pre-market opens at 4:00am cst",
+    session: "Overnight — no active session", next: "Next: pre-market 4:00am cst", color: DB.TXT_DIM
+  };
+  if (cstMins < 510) return {
+    label: "👁️  PRE-MARKET", countdown: "Market opens at 8:30am cst",
+    session: "Pre-market session active", next: "Bear Trap window: 8:30–9:30am cst", color: DB.TXT_GOLD
+  };
+  if (cstMins < 570) return {
+    label: "🪤  BEAR TRAP ACTIVE", countdown: "Window closes at 9:30am cst",
+    session: "Active window — watch flush → stall → flip", next: "DO NOT buy during flush phase", color: DB.TXT_GREEN
+  };
+  if (cstMins < 585) return {
+    label: "⚡  LATE WINDOW", countdown: "Window closes at 9:30am cst",
+    session: "Late Bear Trap window — or invalidated", next: "EOD brief fires at 3:00pm cst", color: DB.TXT_ORANGE
+  };
+  if (cstMins < 900) return {
+    label: "📈  MARKET OPEN", countdown: "Intraday session underway",
+    session: "Regular session", next: "EOD brief fires at 3:00pm cst", color: DB.TXT_CYAN
+  };
+  if (cstMins < 960) return {
+    label: "📊  EOD WIND-DOWN", countdown: "Market closes at 3:00pm cst",
+    session: "Late session", next: "Overnight watch begins after close", color: DB.TXT_DIM
+  };
   return {
-    label:     "OVERNIGHT  🔒",
-    session:   "All sessions closed",
-    countdown: "",
-    next:      "Pre-market opens ~3:00am cst",
-    color:     DB.TXT_DIM
+    label: "🔒  AFTER HOURS", countdown: "Market closed",
+    session: "After-hours session", next: "Pre-market opens tomorrow 4:00am cst", color: DB.TXT_DIM
   };
 }
 
 // ─────────────────────────────────────────────────────────────
-// AI STATUS
+// AI STATUS — updated to reference 9:30am CST window
 // ─────────────────────────────────────────────────────────────
 function getAIStatus(cstMins, dow) {
   if (dow === 0 || dow === 6) return {
-    mode: "💤  STANDBY — Weekend",
-    waiting: "Markets closed. Briefings every 4 hours.",
+    mode: "💤  WEEKEND — MONITORING ONLY",
+    waiting: "No active trading. ES futures + overnight context only.",
     nextAction: "Full monitoring resumes Monday 6:00am cst"
   };
   if (cstMins < 360) return {
@@ -712,15 +652,15 @@ function getAIStatus(cstMins, dow) {
     waiting: "ES trend + Bear Trap setup alignment",
     nextAction: "Market opens 8:30am cst — STAY PATIENT · WATCH FOR TRAP"
   };
-  if (cstMins < 555) return {
+  if (cstMins < 570) return {
     mode: "🪤  BEAR TRAP WATCH — ACTIVE",
     waiting: "Flush → volume stall → momentum flip sequence",
-    nextAction: "Active window until 9:15am cst · DO NOT buy during flush"
+    nextAction: "Active window until 9:30am cst · DO NOT buy during flush"
   };
-  if (cstMins < 570) return {
+  if (cstMins < 585) return {
     mode: "⚡  BEAR TRAP — LATE WINDOW",
-    waiting: "Late flip signal or pattern failure",
-    nextAction: "Critical window closes 9:15am cst"
+    waiting: "Late flip signal or invalidation incoming",
+    nextAction: "Critical window closes 9:30am cst — or sooner if conditions fail"
   };
   if (cstMins < 900) return {
     mode: "📈  INTRADAY MONITOR",
@@ -798,7 +738,7 @@ function buildFallbackBriefText(esData, cst, cstMins, dow, nextBriefStr) {
   if (mode === "PRE_MARKET_HOT")
     return "Market opens soon. It is " + timeStr + " cst.\n\n" + esStatus + ". Danger zone for impulse trades. Breathe. Watch for the Bear Trap — do NOT jump in at open.\n\nNext briefing: " + nextBriefStr;
   if (mode === "MARKET_OPEN")
-    return "Market is open. " + timeStr + " cst — Bear Trap window is ACTIVE.\n\n" + esStatus + ". Watch flush → stall → flip. Do not chase.\n\nNext briefing: " + nextBriefStr;
+    return "Market is open. " + timeStr + " cst — Bear Trap window is ACTIVE until 9:30am cst.\n\n" + esStatus + ". Watch flush → stall → flip. Do not chase. Window closes early on ES VOID or VIX FEAR.\n\nNext briefing: " + nextBriefStr;
   return "Market open. " + timeStr + " cst.\n\n" + esStatus + ". Intraday session underway.\n\nNext briefing: " + nextBriefStr;
 }
 
@@ -846,7 +786,7 @@ function buildDashboardBriefPrompt(data, esData, vixData, cst, cstMins, dow) {
   var mode     = getDashboardBriefMode(cstMins, dow);
   var al       = getESAlignmentStatus(esData);
 
-  var ctx = "You are a calm, direct trading coach. The user trades SPY options using the Bear Trap Open strategy — watching for a fake morning selloff then buying calls when the trap springs. They tend to trade impulsively before open.\n\n" +
+  var ctx = "You are a calm, direct trading coach. The user trades SPY options using the Bear Trap Open strategy — watching for a fake morning selloff then buying calls when the trap springs. They tend to trade impulsively before open. Active window: 8:30–9:30am cst (closes early on ES VOID or VIX FEAR).\n\n" +
     "Time: " + timeStr + " cst\nSPY: " + price + " (" + pctChg + ")\nES: " + esTrend + " (" + esChgPct + ")\nVIX: " + vixVal + "\nAlignment: " + al.label + "\nNext update: " + nextStr + "\n\n";
 
   var instr = "";
@@ -857,7 +797,7 @@ function buildDashboardBriefPrompt(data, esData, vixData, cst, cstMins, dow) {
   else if (mode === "PRE_MARKET_HOT")
     instr = "3-4 sentences of firm emotional coaching: don't jump in, watch for Bear Trap flush, stay patient. Personal and direct. End: 'Next update: " + nextStr + "'.";
   else if (mode === "MARKET_OPEN")
-    instr = "3 sentences: quick ES/SPY read, Bear Trap conditions check, patience coaching. End: 'Next update: " + nextStr + "'.";
+    instr = "3 sentences: quick ES/SPY read, Bear Trap conditions check (8:30–9:30am window), patience coaching. End: 'Next update: " + nextStr + "'.";
   else
     instr = "2 sentences: intraday read + one tactical note. End: 'Next update: " + nextStr + "'.";
 
@@ -877,19 +817,16 @@ function setupDashboardSheet(ss) {
   sheet.clearContents();
   sheet.clearFormats();
 
-  // ── Ensure enough columns ─────────────────────────────────
   while (sheet.getMaxColumns() < 7) sheet.insertColumnAfter(sheet.getMaxColumns());
 
-  // ── Column widths ─────────────────────────────────────────
-  sheet.setColumnWidth(DC.GAP_L,  10);   // gap
-  sheet.setColumnWidth(DC.CARD_L, 310);  // left card
-  sheet.setColumnWidth(DC.GAP_M,  10);   // gap
-  sheet.setColumnWidth(DC.CARD_R, 310);  // right card
-  sheet.setColumnWidth(DC.GAP_R,  10);   // gap
-  sheet.setColumnWidth(DC.WIDE,   10);   // unused — right end cap
-  sheet.setColumnWidth(DC.GAP_END, 10);  // end
+  sheet.setColumnWidth(DC.GAP_L,  10);
+  sheet.setColumnWidth(DC.CARD_L, 310);
+  sheet.setColumnWidth(DC.GAP_M,  10);
+  sheet.setColumnWidth(DC.CARD_R, 310);
+  sheet.setColumnWidth(DC.GAP_R,  10);
+  sheet.setColumnWidth(DC.WIDE,   10);
+  sheet.setColumnWidth(DC.GAP_END, 10);
 
-  // ── Flood entire sheet with base bg ──────────────────────
   sheet.getRange(1, 1, 50, 7).setBackground(DB.BG_SHEET);
 
   // ── Row 1: Banner ────────────────────────────────────────
@@ -917,7 +854,6 @@ function setupDashboardSheet(ss) {
   sheet.getRange(DR.GAP_1, 1, 1, 7).setBackground(DB.BG_SHEET);
   sheet.setRowHeight(DR.GAP_1, 10);
 
-  // ── Pre-fill gap column cells for card rows ───────────────
   var cardRows = [];
   for (var r = DR.SPY_HDR; r <= DR.SPY_PAD; r++) cardRows.push(r);
   for (var r = DR.AI_HDR;  r <= DR.AI_PAD;  r++) cardRows.push(r);
@@ -933,7 +869,6 @@ function setupDashboardSheet(ss) {
     sheet.getRange(rr, DC.GAP_END).setBackground(DB.BG_SHEET);
   }
 
-  // ── Gap rows between card rows ───────────────────────────
   sheet.getRange(DR.GAP_2,  1, 1, 7).setBackground(DB.BG_SHEET);
   sheet.getRange(DR.GAP_3,  1, 1, 7).setBackground(DB.BG_SHEET);
   sheet.getRange(DR.GAP_4,  1, 1, 7).setBackground(DB.BG_SHEET);
@@ -943,7 +878,6 @@ function setupDashboardSheet(ss) {
   sheet.setRowHeight(DR.GAP_4, 12);
   sheet.setRowHeight(DR.GAP_5, 12);
 
-  // ── Freeze top 2 ─────────────────────────────────────────
   sheet.setFrozenRows(2);
 
   Logger.log("Dashboard (card layout) setup complete.");
@@ -964,6 +898,8 @@ function setupDashboardSheetFromMenu() {
     "  Row 2: AI Status card  |  ES Futures card\n" +
     "  Row 3: Bear Trap Alignment (full width)\n" +
     "  Row 4: AI Briefing terminal (full width)\n\n" +
+    "Bear Trap active window: 8:30–9:30am cst\n" +
+    "Closes early on ES VOID or VIX FEAR.\n\n" +
     "Run 'Refresh Dashboard Now' to populate."
   );
 }
