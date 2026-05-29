@@ -586,9 +586,17 @@ function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldB
   try {
     var lastBriefMins = parseInt(getFlag("DASHBOARD_LAST_BRIEF_MINS") || "-1");
     var briefText     = getFlag("DASHBOARD_LAST_BRIEF_TEXT") || "⏳ Waiting for first briefing...";
-    var briefTime     = lastBriefMins >= 0 ? minsToTimeStr(lastBriefMins) : "—";
-    var nextBriefStr  = getNextBriefTimeStr(cstMins, dow);
-    var postedStr     = briefTime !== "—" ? briefTime + " cst" : "—";
+
+    // Only show posted time if we have a valid stored brief
+    var hasValidBrief = (lastBriefMins >= 0 && briefText.length > 20 && briefText !== "⏳ Waiting for first briefing...");
+    var briefTime     = hasValidBrief ? minsToTimeStr(lastBriefMins) : null;
+    var postedStr     = briefTime ? briefTime + " cst" : "not yet posted";
+
+    // Next update: only meaningful once a brief has fired; overnight show a simpler label
+    var mode          = getDashboardBriefMode(cstMins, dow);
+    var nextBriefStr  = (mode === "OVERNIGHT" && !hasValidBrief)
+                        ? "next market session"
+                        : getNextBriefTimeStr(cstMins, dow);
 
     if (shouldBrief) {
       var newBrief = generateDashboardBrief(data, esData, vixData, now);
@@ -596,8 +604,11 @@ function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldB
         briefText = newBrief;
         setFlag("DASHBOARD_LAST_BRIEF_TEXT", briefText);
         setFlag("DASHBOARD_LAST_BRIEF_MINS", cstMins.toString());
-        postedStr    = minsToTimeStr(cstMins) + " cst";
-        nextBriefStr = getNextBriefTimeStr(cstMins, dow);
+        postedStr     = minsToTimeStr(cstMins) + " cst";
+        mode          = getDashboardBriefMode(cstMins, dow);
+        nextBriefStr  = getNextBriefTimeStr(cstMins, dow);
+      } else {
+        Logger.log("writeBriefCard: generateDashboardBrief returned null — keeping previous brief, not updating posted time.");
       }
     }
 
@@ -662,7 +673,7 @@ function generateDashboardBrief(data, esData, vixData, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 200, temperature: 0.4 }
+      generationConfig: { maxOutputTokens: 400, temperature: 0.4 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -676,13 +687,27 @@ function generateDashboardBrief(data, esData, vixData, now) {
     }
 
     var json = JSON.parse(resp.getContentText());
-    return json.candidates
+    var text = json.candidates
         && json.candidates[0]
         && json.candidates[0].content
         && json.candidates[0].content.parts
         && json.candidates[0].content.parts[0]
          ? json.candidates[0].content.parts[0].text.trim()
          : null;
+
+    // Reject truncated responses — must be at least 80 chars and end with
+    // sentence-ending punctuation. If not, return null so we don't save garbage.
+    if (!text || text.length < 80) {
+      Logger.log("Dashboard brief rejected — too short (" + (text ? text.length : 0) + " chars): " + text);
+      return null;
+    }
+    var lastChar = text[text.length - 1];
+    if (lastChar !== "." && lastChar !== "!" && lastChar !== "?") {
+      Logger.log("Dashboard brief rejected — appears truncated, last char: '" + lastChar + "'");
+      return null;
+    }
+
+    return text;
   } catch (e) {
     Logger.log("generateDashboardBrief ERROR: " + e.message);
     return null;
