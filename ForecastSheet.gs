@@ -44,9 +44,9 @@ var FC = {
   GAP_ROW:          4,
   HEADER_ROW:       5,
   DATA_START_ROW:   6,   // rows 6–18 = 13 forecast slots
-  DATA_END_ROW:     18,
+  DATA_END_ROW:     19,
   GAP2_ROW:         19,
-  CHART_ANCHOR_ROW: 20,  // chart placed here
+  CHART_ANCHOR_ROW: 23,  // chart placed here
 
   // Columns
   COL_TIME:         1,   // 30-min slot label  e.g. "8:30 AM"
@@ -69,7 +69,7 @@ var FC = {
   COOLDOWN_MIN:           120,  // skip if run within 2 hours
 
   // Slot count
-  SLOT_COUNT: 13   // 8:30, 9:00, 9:30 … 3:00 = 13 half-hour slots
+  SLOT_COUNT: 14   // 8:30, 9:00, 9:30 … 3:00 = 13 half-hour slots
 };
 
 // Market session slots — CST minutes from midnight
