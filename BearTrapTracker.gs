@@ -450,6 +450,19 @@ function getActiveWindowInvalidationReason(vixData, esData, metrics) {
 // ─────────────────────────────────────────────────────────────
 function updatePreOpenPanel(sheet, data, now) {
   try {
+    // ── Safety-net reset ──────────────────────────────────────
+    // If the 3:00pm EOD tick was skipped (Yahoo null, trigger
+    // drift, etc.), resetDailyBearTrapFlags() never ran and stale
+    // flags would poison the next day. This fires once on the
+    // first pre-open tick of each new CST date and self-gates
+    // via BT_LAST_RESET_DATE so it only costs one getFlag() call
+    // on all subsequent ticks.
+    var todayReset = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
+    if (getFlag("BT_LAST_RESET_DATE") !== todayReset) {
+      resetDailyBearTrapFlags();
+      setFlag("BT_LAST_RESET_DATE", todayReset);
+      Logger.log("BT safety-net reset fired for " + todayReset);
+    }
     var pmData = fetchPreMarketData();
     if (!pmData) return;
 
