@@ -45,6 +45,11 @@ function setupSheets() {
     setupForecastSheet(ss);
   }
 
+// ── AI Health sheet ───────────────────────────────────────
+  if (!ss.getSheetByName(SHEET_AI_HEALTH)) {
+    setupAIHealthSheet(ss);
+  }
+
   SpreadsheetApp.getUi().alert(
     "🚀 SPY TRACKER READY!\n\n" +
     "✅ Sheets created and themed.\n" +
