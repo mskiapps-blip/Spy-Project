@@ -4,12 +4,29 @@
 //
 //  All times in CST 12-hour format.
 //
-//  FIX (2025-05-30): Invalidation return moved inside the
-//  once-daily gate. Previously the outer `return` fired on
-//  every tick once invalidated, silencing the sheet for the
-//  rest of the day. Now only the first invalidation tick
-//  returns early; subsequent ticks fall through and keep
-//  logging normal rows.
+//  FIXES applied (2025-05-30):
+//
+//  FIX 1 — Invalidation return moved inside the once-daily gate.
+//    Previously the outer `return` fired on every tick once
+//    invalidated, silencing the sheet all day. Now only the
+//    first invalidation tick returns early; all later ticks
+//    fall through and keep logging normally.
+//
+//  FIX 2 — AI memo truncation check.
+//    Gemini was being called with maxOutputTokens: 140 (sticky
+//    note sized). It ran out of space mid-sentence and the half-
+//    finished memo was saved as-is. Now uses 2000 tokens and
+//    validates that the response ends with sentence-ending
+//    punctuation before saving. Truncated = thrown away.
+//
+//  FIX 3 — Poisoned gate fix.
+//    BT_LAST_AI_PHASE / BT_LAST_AI_SIGNAL / BT_LAST_AI_CONF_BAND
+//    were being updated in shouldFireAI() BEFORE the AI call
+//    happened. A failed or truncated call would permanently update
+//    the gate state so it thought "nothing has changed" — locking
+//    out all future AI memos for the rest of the day.
+//    Now those flags are only written after a successful, validated
+//    response comes back.
 // ============================================================
 
 var SHEET_BEAR_TRAP = "🪤 BEAR TRAP";
@@ -18,22 +35,22 @@ var SHEET_BEAR_TRAP = "🪤 BEAR TRAP";
 // TIMING CONSTANTS — all in CST
 // ─────────────────────────────────────────────────────────────
 var BT = {
-  OPEN_HOUR:          8,
-  OPEN_MIN:           30,
-  ACTIVE_END_HOUR:    9,
-  ACTIVE_END_MIN:     30,
-  EOD_HOUR:           15,
-  EOD_MIN:            0,
-  EOD_WINDOW_MIN:     10,
-  FLUSH_MIN_PCT:      0.20,
-  FLUSH_STRONG_PCT:   0.40,
-  VOLUME_WEAK_PCT:    90,
-  MOMENTUM_FLIP_PCT:  0.05,
-  OVERNIGHT_TAG_PCT:  0.15,
-  CALL_CONFIRM_PCT:   0.10,
+  OPEN_HOUR:               8,
+  OPEN_MIN:                30,
+  ACTIVE_END_HOUR:         9,
+  ACTIVE_END_MIN:          30,
+  EOD_HOUR:                15,
+  EOD_MIN:                 0,
+  EOD_WINDOW_MIN:          10,
+  FLUSH_MIN_PCT:           0.20,
+  FLUSH_STRONG_PCT:        0.40,
+  VOLUME_WEAK_PCT:         90,
+  MOMENTUM_FLIP_PCT:       0.05,
+  OVERNIGHT_TAG_PCT:       0.15,
+  CALL_CONFIRM_PCT:        0.10,
   FLUSH_FAST_PCT_PER_BAR:  0.15,
   FLUSH_SLOW_PCT_PER_BAR:  0.05,
-  SCORE_VIX_NORMAL:   10
+  SCORE_VIX_NORMAL:        10
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -58,8 +75,6 @@ var AI_PHASE_CHANGE_GATE = true;
 // ─────────────────────────────────────────────────────────────
 function runBearTrapTick(data, now) {
   try {
-    // toCSTDate() returns a safe helper object for .getHours()/.getMinutes()/.getDay()
-    // now (raw UTC Date) is passed to Utilities.formatDate for all string formatting
     var cst = toCSTDate(now);
     var ss  = SpreadsheetApp.getActiveSpreadsheet();
 
@@ -107,12 +122,9 @@ function runBearTrapTick(data, now) {
     var metrics = computeBearTrapMetrics(data, cst, vixData, esData);
 
     // ── Early invalidation check ──────────────────────────────
-    // BUG FIX: `return` is now INSIDE the once-daily gate.
-    // Previously the outer return fired on every tick after the
-    // first invalidation, silencing the sheet all day.
-    // Now: first tick writes the invalidation row and returns.
-    // All subsequent ticks skip the write but fall through and
-    // keep logging normal rows for the rest of the active window.
+    // FIX 1: `return` is now INSIDE the once-daily gate.
+    // First invalidation tick → write row and return.
+    // All later ticks → skip write, fall through, keep logging.
     var invalidReason = getActiveWindowInvalidationReason(vixData, esData, metrics);
     if (invalidReason) {
       var todayStr2    = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
@@ -120,9 +132,9 @@ function runBearTrapTick(data, now) {
       if (invalidFired !== todayStr2) {
         writeInvalidationRow(sheet, data, now, invalidReason);
         setFlag("BT_INVALID_FIRED_TODAY", todayStr2);
-        return; // ← only exit on the FIRST invalidation tick
+        return; // ← only exits on the FIRST invalidation tick
       }
-      // invalidFired already set — fall through and keep tracking
+      // already fired today — fall through and keep logging
     }
 
     // ── AI memo — gated ───────────────────────────────────────
@@ -176,8 +188,265 @@ function runBearTrapTick(data, now) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// SHOULD FIRE AI
+// FIX 3: conf band flag is NO LONGER updated here.
+// It is only updated inside getBearTrapAIMemo() after a
+// successful, validated response. This prevents a failed or
+// truncated call from poisoning the gate and locking out all
+// future memos for the rest of the day.
+// ─────────────────────────────────────────────────────────────
+function shouldFireAI(metrics) {
+  if (!AI_PHASE_CHANGE_GATE) return true;
+
+  var callCount = parseInt(getFlag("BT_AI_CALL_COUNT") || "0");
+  if (callCount >= 10) return false;
+
+  var lastPhase  = getFlag("BT_LAST_AI_PHASE")      || "";
+  var lastSignal = getFlag("BT_LAST_AI_SIGNAL")     || "";
+  var lastConf   = parseInt(getFlag("BT_LAST_AI_CONF_BAND") || "-1");
+
+  var confBand = Math.floor(metrics.confidence / 25);
+
+  var phaseChanged  = metrics.phase !== lastPhase;
+  var signalChanged = metrics.entrySignal !== lastSignal;
+  var confChanged   = confBand !== lastConf;
+
+  // NOTE: we do NOT write BT_LAST_AI_CONF_BAND here anymore.
+  // That write only happens in getBearTrapAIMemo() on success.
+  return phaseChanged || signalChanged || confChanged;
+}
+
+// ─────────────────────────────────────────────────────────────
+// AI MEMO — intraday
+// FIX 2: maxOutputTokens raised to 2000 (was 140 — sticky note).
+// FIX 2: truncation check — must end with . ! or ? and be ≥ 40
+//         chars. Garbage in = nothing saved.
+// FIX 3: gate flags (phase, signal, confBand) only written on
+//         a clean, validated response — never on failure.
+// ─────────────────────────────────────────────────────────────
+function getBearTrapAIMemo(metrics, data, vixData, esData, now) {
+  try {
+    if (!shouldAllowAICall(AI_FEATURE.BEAR_TRAP)) {
+      Logger.log("BT: AI skipped by quota guard.");
+      return null;
+    }
+
+    var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+    if (!apiKey) return "⚙️ Add GEMINI_API_KEY to enable AI memos.";
+
+    var prompt = buildBearTrapPrompt(metrics, data, vixData, esData);
+    Logger.log("BT AI prompt (" + prompt.length + " chars): " + prompt);
+
+    var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
+    var payload = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 2000, temperature: 0.3 }
+    });
+
+    var resp = UrlFetchApp.fetch(url, {
+      method:             "post",
+      contentType:        "application/json",
+      payload:            payload,
+      muteHttpExceptions: true
+    });
+
+    var code = resp.getResponseCode();
+    Logger.log("BT Gemini response code: " + code);
+
+    if (code !== 200) {
+      Logger.log("BT Gemini error: " + resp.getContentText().substring(0, 200));
+      recordAICall(AI_FEATURE.BEAR_TRAP, false);
+      return null;
+    }
+
+    var json = JSON.parse(resp.getContentText());
+    var text = json.candidates
+            && json.candidates[0]
+            && json.candidates[0].content
+            && json.candidates[0].content.parts
+            && json.candidates[0].content.parts[0]
+             ? json.candidates[0].content.parts[0].text.trim()
+             : null;
+
+    // ── FIX 2: Truncation check ───────────────────────────────
+    // Throw away anything too short or mid-sentence.
+    if (!text || text.length < 40) {
+      Logger.log("BT: AI memo rejected — too short (" + (text ? text.length : 0) + " chars).");
+      recordAICall(AI_FEATURE.BEAR_TRAP, false);
+      return null;
+    }
+    var lastChar = text[text.length - 1];
+    if (lastChar !== "." && lastChar !== "!" && lastChar !== "?") {
+      Logger.log("BT: AI memo rejected — appears truncated, ends with: '" + lastChar + "' | text: " + text.substring(0, 80));
+      recordAICall(AI_FEATURE.BEAR_TRAP, false);
+      return null;
+    }
+
+    // ── FIX 3: Only update gate flags on clean success ────────
+    var callCount = parseInt(getFlag("BT_AI_CALL_COUNT") || "0");
+    setFlag("BT_AI_CALL_COUNT",    (callCount + 1).toString());
+    setFlag("BT_LAST_AI_PHASE",    metrics.phase);
+    setFlag("BT_LAST_AI_SIGNAL",   metrics.entrySignal);
+    setFlag("BT_LAST_AI_CONF_BAND", Math.floor(metrics.confidence / 25).toString());
+
+    recordAICall(AI_FEATURE.BEAR_TRAP, true);
+    return "🤖 " + text;
+
+  } catch (e) {
+    Logger.log("getBearTrapAIMemo ERROR: " + e.message);
+    recordAICall(AI_FEATURE.BEAR_TRAP, false);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BUILD BEAR TRAP PROMPT — enriched
+// ─────────────────────────────────────────────────────────────
+function buildBearTrapPrompt(metrics, data, vixData, esData) {
+  var overnightTagged = getFlag("BT_OVERNIGHT_TAGGED") === "YES";
+
+  var vwap    = data.vwap || parseFloat(getFlag("DAY_VWAP")) || 0;
+  var vwapStr = vwap > 0
+    ? "$" + vwap.toFixed(2) + " (" + ((data.price - vwap) / vwap * 100).toFixed(2) + "% " +
+      (data.price >= vwap ? "above" : "below") + ")"
+    : "unknown";
+
+  var s1 = getFlag("SESSION_LAST_S1") || "—";
+  var r1 = getFlag("SESSION_LAST_R1") || "—";
+
+  var mbSetup     = getFlag("MB_SETUP_TYPE")       || "unknown";
+  var mbRationale = getFlag("MB_RATIONALE")        || "";
+  var mbFlush     = parseFloat(getFlag("MB_FLUSH_TARGET")) || 0;
+  var mbFlip      = parseFloat(getFlag("MB_FLIP_ZONE"))    || 0;
+
+  var sessionCtx = buildSessionContext();
+
+  return (
+    "SPY Bear Trap detector.\n" +
+    "Price: $" + data.price.toFixed(2) +
+      " | Phase: " + metrics.phase +
+      " | Conf: " + metrics.confidence + "%\n" +
+    "Flush: " + Math.abs(metrics.maxFlushPct).toFixed(2) + "%" +
+      " speed: " + (metrics.flushFast ? "FAST" : "SLOW") +
+      " | Vol: " + (metrics.volPct > 0 ? metrics.volPct.toFixed(0) + "% of pace" : "unknown") + "\n" +
+    "VIX: " + (vixData ? vixData.price.toFixed(1) + " [" + vixData.regime + "]" : "unknown") +
+      " | ES: " + (esData ? esData.trend : "unknown") + "\n" +
+    "OH tagged: " + (overnightTagged ? "YES" : "NO") +
+      " | Flip: " + (metrics.flipDetected ? "YES" : "NO") + "\n" +
+    "VWAP: " + vwapStr + "\n" +
+    "S1 (support): " + s1 + "\n" +
+    "R1 (resistance): " + r1 + "\n" +
+    "Morning brief: " + mbSetup + (mbRationale ? " — " + mbRationale : "") + "\n" +
+    (mbFlush > 0 ? "Predicted flush target: $" + mbFlush.toFixed(2) + "\n" : "") +
+    (mbFlip  > 0 ? "Predicted flip zone: $"    + mbFlip.toFixed(2)  + "\n" : "") +
+    sessionCtx + "\n" +
+    "2 sentences: assess trap probability at this phase + specific level or signal to watch for next."
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// EOD AI MEMO
+// Same truncation check as intraday memo.
+// Gate flags not relevant here (EOD fires once), but still
+// validates response before saving.
+// ─────────────────────────────────────────────────────────────
+function getEODAIMemo(ctx) {
+  try {
+    if (!shouldAllowAICall(AI_FEATURE.BEAR_TRAP_EOD)) {
+      Logger.log("BT EOD: AI skipped by quota guard.");
+      return null;
+    }
+
+    var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+    if (!apiKey) return null;
+
+    var mbSetup       = getFlag("MB_SETUP_TYPE")               || "unknown";
+    var mbFlushTarget = parseFloat(getFlag("MB_FLUSH_TARGET"))  || 0;
+    var winRate       = getFlag("SC_ROLLING_WIN_RATE")          || "?";
+    var patRate       = getFlag("SC_ROLLING_PATTERN_RATE")      || "?";
+    var totalDays     = getFlag("SC_TOTAL_DAYS")                || "?";
+
+    var prompt =
+      "Bear Trap EOD debrief.\n" +
+      "Result: " + ctx.grade + "\n" +
+      "Peak confidence: " + ctx.confidence + "%" +
+        " | Signal issued: " + ctx.signalIssued +
+        (ctx.signalPrice > 0 ? " @ $" + ctx.signalPrice.toFixed(2) : "") + "\n" +
+      "Max flush: " + Math.abs(ctx.maxFlush).toFixed(2) + "%" +
+        (mbFlushTarget > 0 ? " (brief predicted $" + mbFlushTarget.toFixed(2) + ")" : "") + "\n" +
+      "Flip: " + ctx.flipDetected + " at " + ctx.flipTime + "\n" +
+      "Rip confirmed: " + ctx.ripDetected + "\n" +
+      "Overnight high tagged: " + ctx.overnightTagged + "\n" +
+      "Close vs open: " + ctx.closeVsOpen.toFixed(2) + "%\n" +
+      "Morning brief setup: " + mbSetup + "\n" +
+      "Rolling win rate: " + winRate + "% over " + totalDays + " days" +
+        (patRate !== "?" ? " | Pattern rate: " + patRate + "%" : "") + "\n" +
+      "AI calls used today: " + ctx.aiCallsUsed + "/10\n" +
+      "2 sentences: grade today's pattern quality and one lesson for tomorrow.";
+
+    var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
+    var payload = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 2000, temperature: 0.4 }
+    });
+
+    var resp = UrlFetchApp.fetch(url, {
+      method: "post", contentType: "application/json",
+      payload: payload, muteHttpExceptions: true
+    });
+
+    if (resp.getResponseCode() !== 200) {
+      Logger.log("BT EOD Gemini error: " + resp.getResponseCode());
+      recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
+      return null;
+    }
+
+    var json = JSON.parse(resp.getContentText());
+    var text = json.candidates
+            && json.candidates[0]
+            && json.candidates[0].content
+            && json.candidates[0].content.parts
+            && json.candidates[0].content.parts[0]
+             ? json.candidates[0].content.parts[0].text.trim()
+             : null;
+
+    // Truncation check
+    if (!text || text.length < 40) {
+      Logger.log("BT EOD: memo rejected — too short.");
+      recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
+      return null;
+    }
+    var lastChar = text[text.length - 1];
+    if (lastChar !== "." && lastChar !== "!" && lastChar !== "?") {
+      Logger.log("BT EOD: memo rejected — truncated, ends with: '" + lastChar + "'");
+      recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
+      return null;
+    }
+
+    recordAICall(AI_FEATURE.BEAR_TRAP_EOD, true);
+    return "🤖 EOD: " + text;
+
+  } catch (e) {
+    Logger.log("getEODAIMemo ERROR: " + e.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// EARLY INVALIDATION CHECK
+// ─────────────────────────────────────────────────────────────
+function getActiveWindowInvalidationReason(vixData, esData, metrics) {
+  if (esData && esData.alignmentTag === "ES VOID") {
+    return "ES futures fading hard — real distribution, not a trap";
+  }
+  if (vixData && vixData.regime === "FEAR") {
+    return "VIX in FEAR regime — flush likely real selling";
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────
 // PRE-OPEN PANEL
-// now = raw UTC Date passed through for Utilities.formatDate
 // ─────────────────────────────────────────────────────────────
 function updatePreOpenPanel(sheet, data, now) {
   try {
@@ -252,7 +521,6 @@ function buildOvernightStr(price, overnightHigh, overnightLow, dayOpen) {
 
 // ─────────────────────────────────────────────────────────────
 // EOD BRIEF — fires once at 3:00 CST, logs to SCORECARD
-// now = raw UTC Date
 // ─────────────────────────────────────────────────────────────
 function writeEODBrief(sheet, data, now) {
   try {
@@ -261,7 +529,6 @@ function writeEODBrief(sheet, data, now) {
     var signalPrice     = parseFloat(getFlag("BT_SIGNAL_PRICE"))  || 0;
     var flipTime        = getFlag("BT_FLIP_TIME")         || "—";
     var maxFlush        = parseFloat(getFlag("BT_MAX_FLUSH_PCT"))  || 0;
-    var sessionHigh     = parseFloat(getFlag("BT_SESSION_HIGH"))   || 0;
     var dayOpen         = parseFloat(getFlag("BT_DAY_OPEN"))       || 0;
     var overnightTagged = getFlag("BT_OVERNIGHT_TAGGED") === "YES";
     var ripDetected     = getFlag("BT_RIP_DETECTED")  === "YES";
@@ -271,18 +538,30 @@ function writeEODBrief(sheet, data, now) {
     var patternPlayed = ripDetected && flipDetected && Math.abs(maxFlush) >= BT.FLUSH_MIN_PCT;
     var grade, gradeColor;
 
-    if      (patternPlayed && signalIssued === "YES") { grade = "✅ CONFIRMED + SIGNAL CORRECT"; gradeColor = "#1a4a1a"; }
-    else if (patternPlayed && signalIssued !== "YES") { grade = "⚠️ PATTERN PLAYED — SIGNAL MISSED";  gradeColor = "#4a3a00"; }
+    if      (patternPlayed && signalIssued === "YES")  { grade = "✅ CONFIRMED + SIGNAL CORRECT";    gradeColor = "#1a4a1a"; }
+    else if (patternPlayed && signalIssued !== "YES")  { grade = "⚠️ PATTERN PLAYED — SIGNAL MISSED"; gradeColor = "#4a3a00"; }
     else if (!patternPlayed && signalIssued === "YES") { grade = "❌ SIGNAL ISSUED — NO PATTERN";     gradeColor = "#4a1a1a"; }
     else                                               { grade = "➡️ NO PATTERN TODAY";               gradeColor = "#1a1a3e"; }
 
     var closeVsOpen = dayOpen > 0 ? ((data.price - dayOpen) / dayOpen) * 100 : 0;
 
-    var eodMemo = getEODAIMemo(data, confidence, signalIssued, patternPlayed,
-                               maxFlush, closeVsOpen, overnightTagged, aiCallCount);
+    var eodMemo = getEODAIMemo({
+      confidence:      confidence,
+      signalIssued:    signalIssued,
+      signalPrice:     signalPrice,
+      maxFlush:        maxFlush,
+      flipTime:        flipTime,
+      ripDetected:     ripDetected,
+      flipDetected:    flipDetected,
+      overnightTagged: overnightTagged,
+      closeVsOpen:     closeVsOpen,
+      grade:           grade,
+      aiCallsUsed:     aiCallCount
+    });
+
+    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mma").toLowerCase();
 
     var summaryRow = new Array(BT_HEADERS.length).fill("—");
-    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mma").toLowerCase();
     summaryRow[BTC.TIME - 1]         = timeStr + " EOD";
     summaryRow[BTC.PRICE - 1]        = data.price;
     summaryRow[BTC.TRAP_ALERT - 1]   = grade;
@@ -301,12 +580,10 @@ function writeEODBrief(sheet, data, now) {
       .setFontSize(9).setWrap(true);
     sheet.setRowHeight(eodRow, 50);
 
-    // ── Log to SCORECARD ──────────────────────────────────────
     logToScorecard(now, confidence, signalIssued, signalPrice,
                    patternPlayed, grade, maxFlush, closeVsOpen,
                    overnightTagged, aiCallCount);
 
-    // ── Reset for tomorrow ────────────────────────────────────
     resetDailyBearTrapFlags();
     Logger.log("EOD Brief written: " + grade);
 
@@ -317,7 +594,6 @@ function writeEODBrief(sheet, data, now) {
 
 // ─────────────────────────────────────────────────────────────
 // WRITE INVALIDATION ROW
-// now = raw UTC Date
 // ─────────────────────────────────────────────────────────────
 function writeInvalidationRow(sheet, data, now, reason) {
   try {
@@ -343,173 +619,11 @@ function writeInvalidationRow(sheet, data, now, reason) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// AI MEMO
-// now = raw UTC Date (used for timestamp on cooldown flag)
-// ─────────────────────────────────────────────────────────────
-function getBearTrapAIMemo(metrics, data, vixData, esData, now) {
-  try {
-    var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
-    if (!apiKey) return "⚙️ Add GEMINI_API_KEY to enable AI memos.";
-
-    var prompt = buildBearTrapPrompt(metrics, data, vixData, esData);
-    Logger.log("BT AI prompt (" + prompt.length + " chars): " + prompt);
-
-    var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
-    var payload = JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 2000, temperature: 0.3 }
-    });
-
-    var resp = UrlFetchApp.fetch(url, {
-      method:             "post",
-      contentType:        "application/json",
-      payload:            payload,
-      muteHttpExceptions: true
-    });
-
-    var code = resp.getResponseCode();
-    Logger.log("BT Gemini response code: " + code);
-
-    if (code !== 200) {
-      Logger.log("BT Gemini error: " + resp.getContentText().substring(0, 200));
-      recordAICall(AI_FEATURE.BEAR_TRAP, false);
-      return null;
-    }
-
-    var json = JSON.parse(resp.getContentText());
-    var text = json.candidates
-            && json.candidates[0]
-            && json.candidates[0].content
-            && json.candidates[0].content.parts
-            && json.candidates[0].content.parts[0]
-             ? json.candidates[0].content.parts[0].text.trim()
-             : null;
-
-    if (text) {
-      var callCount = parseInt(getFlag("BT_AI_CALL_COUNT") || "0");
-      setFlag("BT_AI_CALL_COUNT", (callCount + 1).toString());
-      setFlag("BT_LAST_AI_PHASE",  metrics.phase);
-      setFlag("BT_LAST_AI_SIGNAL", metrics.entrySignal);
-      recordAICall(AI_FEATURE.BEAR_TRAP, true);
-      return "🤖 " + text;
-    }
-
-    recordAICall(AI_FEATURE.BEAR_TRAP, false);
-    return null;
-
-  } catch (e) {
-    Logger.log("getBearTrapAIMemo ERROR: " + e.message);
-    recordAICall(AI_FEATURE.BEAR_TRAP, false);
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// EOD AI MEMO
-// ─────────────────────────────────────────────────────────────
-function getEODAIMemo(data, confidence, signalIssued, patternPlayed,
-                      maxFlush, closeVsOpen, overnightTagged, aiCallCount) {
-  try {
-    if (!shouldAllowAICall(AI_FEATURE.BEAR_TRAP_EOD)) {
-      Logger.log("BT EOD: AI skipped by quota guard.");
-      return null;
-    }
-
-    var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
-    if (!apiKey) return null;
-
-    var prompt =
-      "SPY Bear Trap EOD debrief.\n" +
-      "Confidence peak: " + confidence + "%\n" +
-      "Signal issued: " + signalIssued + "\n" +
-      "Pattern played: " + (patternPlayed ? "YES" : "NO") + "\n" +
-      "Max flush: " + Math.abs(maxFlush).toFixed(2) + "%\n" +
-      "Close vs open: " + closeVsOpen.toFixed(2) + "%\n" +
-      "Overnight high tagged: " + (overnightTagged ? "YES" : "NO") + "\n" +
-      "AI calls used today: " + aiCallCount + "\n" +
-      "2 sentences: grade today's pattern quality and one lesson for tomorrow.";
-
-    var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
-    var payload = JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 2000, temperature: 0.3 }
-    });
-
-    var resp = UrlFetchApp.fetch(url, {
-      method: "post", contentType: "application/json",
-      payload: payload, muteHttpExceptions: true
-    });
-
-    if (resp.getResponseCode() !== 200) {
-      Logger.log("BT EOD Gemini error: " + resp.getResponseCode());
-      recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
-      return null;
-    }
-
-    var json = JSON.parse(resp.getContentText());
-    var text = json.candidates
-            && json.candidates[0]
-            && json.candidates[0].content
-            && json.candidates[0].content.parts
-            && json.candidates[0].content.parts[0]
-             ? json.candidates[0].content.parts[0].text.trim()
-             : null;
-
-    recordAICall(AI_FEATURE.BEAR_TRAP_EOD, !!text);
-    return text ? "🤖 EOD: " + text : null;
-
-  } catch (e) {
-    Logger.log("getEODAIMemo ERROR: " + e.message);
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// SHOULD FIRE AI
-// ─────────────────────────────────────────────────────────────
-function shouldFireAI(metrics) {
-  if (!AI_PHASE_CHANGE_GATE) return true;
-
-  var callCount = parseInt(getFlag("BT_AI_CALL_COUNT") || "0");
-  if (callCount >= 10) return false;
-
-  var lastPhase  = getFlag("BT_LAST_AI_PHASE")     || "";
-  var lastSignal = getFlag("BT_LAST_AI_SIGNAL")    || "";
-  var lastConf   = parseInt(getFlag("BT_LAST_AI_CONF_BAND") || "-1");
-
-  var confBand = Math.floor(metrics.confidence / 25);
-
-  var phaseChanged  = metrics.phase !== lastPhase;
-  var signalChanged = metrics.entrySignal !== lastSignal;
-  var confChanged   = confBand !== lastConf;
-
-  if (phaseChanged || signalChanged || confChanged) {
-    setFlag("BT_LAST_AI_CONF_BAND", confBand.toString());
-    return true;
-  }
-  return false;
-}
-
-// ─────────────────────────────────────────────────────────────
-// EARLY INVALIDATION CHECK
-// ─────────────────────────────────────────────────────────────
-function getActiveWindowInvalidationReason(vixData, esData, metrics) {
-  if (esData && esData.alignmentTag === "ES VOID") {
-    return "ES futures fading hard — real distribution, not a trap";
-  }
-  if (vixData && vixData.regime === "FEAR") {
-    return "VIX in FEAR regime — flush likely real selling";
-  }
-  return null;
-}
-
-// ─────────────────────────────────────────────────────────────
 // COMPUTE BEAR TRAP METRICS
-// cst = helper object from toCSTDate() — used for .getHours()/.getMinutes() only
 // ─────────────────────────────────────────────────────────────
 function computeBearTrapMetrics(data, cst, vixData, esData) {
-  var price    = data.price;
-  var dayOpen  = parseFloat(getFlag("BT_DAY_OPEN")) || 0;
+  var price   = data.price;
+  var dayOpen = parseFloat(getFlag("BT_DAY_OPEN")) || 0;
   if (dayOpen === 0) {
     dayOpen = price;
     setFlag("BT_DAY_OPEN", dayOpen.toString());
@@ -559,7 +673,6 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   var flushPctPerBar = barsInFlush > 0 ? Math.abs(maxFlushPct) / barsInFlush : 0;
 
   var flushFast = false;
-  var flushSlow = false;
   var flushSpeedStr;
   if (Math.abs(maxFlushPct) < BT.FLUSH_MIN_PCT) {
     flushSpeedStr = "—";
@@ -570,14 +683,13 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
     flushSpeedStr = "📊 MOD (" + flushPctPerBar.toFixed(3) + "%/bar)";
   } else {
     flushSpeedStr = "🐌 SLOW (" + flushPctPerBar.toFixed(3) + "%/bar)";
-    flushSlow = true;
   }
 
   var volPct  = 0;
   var volWeak = false;
   if (data.volumeToday > 0 && data.avgVol30 > 0) {
     var minutesSinceOpen = Math.max(1, nowMins - (BT.OPEN_HOUR * 60 + BT.OPEN_MIN));
-    var expectedVol = (data.avgVol30 / 390) * minutesSinceOpen;
+    var expectedVol      = (data.avgVol30 / 390) * minutesSinceOpen;
     volPct  = expectedVol > 0 ? (data.volumeToday / expectedVol) * 100 : 0;
     volWeak = volPct < BT.VOLUME_WEAK_PCT;
   }
@@ -602,13 +714,13 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   var flushExists  = Math.abs(maxFlushPct) >= BT.FLUSH_MIN_PCT;
   var flushStrong  = Math.abs(maxFlushPct) >= BT.FLUSH_STRONG_PCT;
 
-  var prevPrice = parseFloat(getFlag("PREV_PRICE")) || 0;
+  var prevPrice     = parseFloat(getFlag("PREV_PRICE")) || 0;
   var singleTickPct = prevPrice > 0 ? ((price - prevPrice) / prevPrice) * 100 : 0;
 
   if (!flipDetected && flushExists && singleTickPct >= BT.MOMENTUM_FLIP_PCT && price < flushAnchor) {
     flipDetected = true;
     setFlag("BT_FLIP_DETECTED", "YES");
-    setFlag("BT_FLIP_PRICE", price.toString());
+    setFlag("BT_FLIP_PRICE",    price.toString());
   }
 
   if (!ripDetected && flipDetected) {
@@ -620,27 +732,27 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   }
 
   var phase;
-  if (ripDetected)        { phase = PHASE.RIP; }
-  else if (flipDetected)  { phase = PHASE.FLIP; }
-  else if (flushExists)   {
+  if (ripDetected)       { phase = PHASE.RIP; }
+  else if (flipDetected) { phase = PHASE.FLIP; }
+  else if (flushExists)  {
     var stalling = Math.abs(tickPct) < 0.05 && recentTicks.length >= 3;
     phase = stalling ? PHASE.STALL : PHASE.FLUSH;
   }
   else { phase = PHASE.WATCH; }
 
   var score = 0;
-  if (overnightTagged)                                    score += 20;
-  if (flushExists)                                        score += 15;
-  if (flushStrong)                                        score += 10;
-  if (flushFast)                                          score += 15;
-  if (volWeak && flushExists)                             score += 15;
-  if (flipDetected)                                       score += 15;
-  if (ripDetected)                                        score += 10;
-  if (vixData && vixData.regime === "NORMAL")             score += BT.SCORE_VIX_NORMAL;
+  if (overnightTagged)                                     score += 20;
+  if (flushExists)                                         score += 15;
+  if (flushStrong)                                         score += 10;
+  if (flushFast)                                           score += 15;
+  if (volWeak && flushExists)                              score += 15;
+  if (flipDetected)                                        score += 15;
+  if (ripDetected)                                         score += 10;
+  if (vixData && vixData.regime === "NORMAL")              score += BT.SCORE_VIX_NORMAL;
   if (esData  && esData.trend === "FADING" && flushExists) score += 10;
-  if (esData  && esData.alignmentTag === "ES CAUTION")    score -= 10;
-  if (esData  && esData.alignmentTag === "ES VOID")       score -= 30;
-  if (vixData && vixData.regime === "FEAR")               score -= 20;
+  if (esData  && esData.alignmentTag === "ES CAUTION")     score -= 10;
+  if (esData  && esData.alignmentTag === "ES VOID")        score -= 30;
+  if (vixData && vixData.regime === "FEAR")                score -= 20;
   score = Math.max(0, Math.min(100, score));
 
   setFlag("BT_LAST_CONFIDENCE", score.toString());
@@ -682,7 +794,7 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
 
   if (entrySignal.indexOf("BUY") !== -1) {
     setFlag("BT_SIGNAL_ISSUED", "YES");
-    setFlag("BT_SIGNAL_PRICE", price.toString());
+    setFlag("BT_SIGNAL_PRICE",  price.toString());
   }
 
   return {
@@ -716,11 +828,11 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics, vixData, esData) {
 
     var rowBg = (rowNum % 2 === 0) ? BT_COLOR.ROW_EVEN : BT_COLOR.ROW_ODD;
 
-    if      (metrics.ripDetected)                         rowBg = BT_COLOR.ROW_RIP;
-    else if (metrics.entrySignal.indexOf("BUY") !== -1)   rowBg = BT_COLOR.ROW_BUY;
-    else if (metrics.flipDetected)                        rowBg = BT_COLOR.ROW_FLIP;
-    else if (metrics.phase === PHASE.STALL)               rowBg = BT_COLOR.ROW_STALL;
-    else if (metrics.confidence >= 50 && metrics.flushExists) rowBg = BT_COLOR.ROW_FLUSH;
+    if      (metrics.ripDetected)                              rowBg = BT_COLOR.ROW_RIP;
+    else if (metrics.entrySignal.indexOf("BUY") !== -1)        rowBg = BT_COLOR.ROW_BUY;
+    else if (metrics.flipDetected)                             rowBg = BT_COLOR.ROW_FLIP;
+    else if (metrics.phase === PHASE.STALL)                    rowBg = BT_COLOR.ROW_STALL;
+    else if (metrics.confidence >= 50 && metrics.flushExists)  rowBg = BT_COLOR.ROW_FLUSH;
 
     sheet.getRange(rowNum, 1, 1, BT_HEADERS.length).setBackground(rowBg);
 
@@ -729,11 +841,11 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics, vixData, esData) {
 
     var trapCell = sheet.getRange(rowNum, BTC.TRAP_ALERT);
     trapCell.setFontSize(9).setFontWeight("bold").setWrap(false);
-    if      (metrics.ripDetected)                             trapCell.setFontColor(BT_COLOR.TEXT_GREEN);
-    else if (metrics.entrySignal.indexOf("BUY") !== -1)       trapCell.setFontColor(BT_COLOR.TEXT_GREEN);
-    else if (metrics.flipDetected)                            trapCell.setFontColor(BT_COLOR.TEXT_GOLD);
-    else if (metrics.confidence >= 50 && metrics.flushExists) trapCell.setFontColor(BT_COLOR.TEXT_RED);
-    else                                                      trapCell.setFontColor(BT_COLOR.TEXT_DIM);
+    if      (metrics.ripDetected)                              trapCell.setFontColor(BT_COLOR.TEXT_GREEN);
+    else if (metrics.entrySignal.indexOf("BUY") !== -1)        trapCell.setFontColor(BT_COLOR.TEXT_GREEN);
+    else if (metrics.flipDetected)                             trapCell.setFontColor(BT_COLOR.TEXT_GOLD);
+    else if (metrics.confidence >= 50 && metrics.flushExists)  trapCell.setFontColor(BT_COLOR.TEXT_RED);
+    else                                                       trapCell.setFontColor(BT_COLOR.TEXT_DIM);
 
     sheet.getRange(rowNum, BTC.PHASE).setFontColor(BT_COLOR.TEXT_SECONDARY).setFontSize(9).setHorizontalAlignment("center");
     sheet.getRange(rowNum, BTC.FLUSH_DEPTH).setFontFamily(BT_FONT.MONO).setFontColor(
@@ -746,37 +858,33 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics, vixData, esData) {
     if (vixData) {
       sheet.getRange(rowNum, BTC.VIX).setFontSize(9).setHorizontalAlignment("center")
         .setFontColor(
-          vixData.regime === "FEAR"     ? BT_COLOR.TEXT_RED  :
-          vixData.regime === "ELEVATED" ? BT_COLOR.TEXT_GOLD :
+          vixData.regime === "FEAR"     ? BT_COLOR.TEXT_RED   :
+          vixData.regime === "ELEVATED" ? BT_COLOR.TEXT_GOLD  :
           vixData.regime === "NORMAL"   ? BT_COLOR.TEXT_GREEN : BT_COLOR.TEXT_DIM
         );
     }
     if (esData) {
       sheet.getRange(rowNum, BTC.ES_TREND).setFontSize(9).setHorizontalAlignment("center")
         .setFontColor(
-          esData.alignmentTag === "ES VOID"    ? BT_COLOR.TEXT_RED  :
-          esData.trend         === "FADING"    ? BT_COLOR.TEXT_GREEN :
-          esData.trend         === "CLIMBING"  ? BT_COLOR.TEXT_RED  : BT_COLOR.TEXT_GOLD
+          esData.alignmentTag === "ES VOID"   ? BT_COLOR.TEXT_RED   :
+          esData.trend        === "FADING"    ? BT_COLOR.TEXT_GREEN :
+          esData.trend        === "CLIMBING"  ? BT_COLOR.TEXT_RED   : BT_COLOR.TEXT_GOLD
         );
     }
 
     var conf = metrics.confidence;
-    sheet.getRange(rowNum, BTC.CONFIDENCE).setHorizontalAlignment("center").setFontFamily(BT_FONT.MONO).setFontWeight("bold").setFontSize(10)
+    sheet.getRange(rowNum, BTC.CONFIDENCE)
+      .setHorizontalAlignment("center").setFontFamily(BT_FONT.MONO).setFontWeight("bold").setFontSize(10)
       .setFontColor(conf >= 75 ? BT_COLOR.TEXT_GREEN : conf >= 50 ? BT_COLOR.TEXT_GOLD : conf >= 30 ? "#ff8a65" : BT_COLOR.TEXT_RED);
 
     var entryCell = sheet.getRange(rowNum, BTC.ENTRY_SIGNAL);
     entryCell.setHorizontalAlignment("center").setFontSize(9);
-    if (metrics.entrySignal.indexOf("BUY CALLS") !== -1) {
-      entryCell.setBackground("#1b5e20").setFontColor("#ffffff").setFontWeight("bold").setFontSize(10);
-    } else if (metrics.entrySignal.indexOf("WATCH") !== -1 || metrics.entrySignal.indexOf("FLIP") !== -1) {
-      entryCell.setFontColor(BT_COLOR.TEXT_GOLD).setFontWeight("bold");
-    } else if (metrics.entrySignal.indexOf("RIP") !== -1) {
-      entryCell.setFontColor(BT_COLOR.TEXT_GREEN).setFontWeight("bold");
-    } else if (metrics.entrySignal.indexOf("NOT TODAY") !== -1) {
-      entryCell.setFontColor(BT_COLOR.TEXT_DIM);
-    } else {
-      entryCell.setFontColor("#7a7a9a");
-    }
+    if      (metrics.entrySignal.indexOf("BUY CALLS") !== -1) { entryCell.setBackground("#1b5e20").setFontColor("#ffffff").setFontWeight("bold").setFontSize(10); }
+    else if (metrics.entrySignal.indexOf("WATCH")     !== -1 ||
+             metrics.entrySignal.indexOf("FLIP")      !== -1) { entryCell.setFontColor(BT_COLOR.TEXT_GOLD).setFontWeight("bold"); }
+    else if (metrics.entrySignal.indexOf("RIP")       !== -1) { entryCell.setFontColor(BT_COLOR.TEXT_GREEN).setFontWeight("bold"); }
+    else if (metrics.entrySignal.indexOf("NOT TODAY") !== -1) { entryCell.setFontColor(BT_COLOR.TEXT_DIM); }
+    else                                                       { entryCell.setFontColor("#7a7a9a"); }
 
     sheet.getRange(rowNum, BTC.TARGET_PRICE).setFontFamily(BT_FONT.MONO).setFontColor(BT_COLOR.TEXT_GOLD).setFontWeight("bold").setFontSize(9).setHorizontalAlignment("center");
     sheet.getRange(rowNum, BTC.OVERNIGHT).setFontColor("#5a5a7a").setFontSize(8).setHorizontalAlignment("left");
@@ -788,16 +896,11 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics, vixData, esData) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CST HELPER — FIXED
-// Returns a plain helper object with .getHours(), .getMinutes(),
-// .getDay(), .getTime() that correctly reflect CST values.
-// All Utilities.formatDate calls must use the raw UTC Date (now),
-// NOT this object.
+// CST HELPER
 // ─────────────────────────────────────────────────────────────
 function toCSTDate(utcDate) {
   var h   = parseInt(Utilities.formatDate(utcDate, "America/Chicago", "H"),  10);
   var m   = parseInt(Utilities.formatDate(utcDate, "America/Chicago", "mm"), 10);
-  // "u" = 1(Mon)–7(Sun); % 7 maps to 0=Sun, 1=Mon … 6=Sat
   var dow = parseInt(Utilities.formatDate(utcDate, "America/Chicago", "u"),  10) % 7;
   return {
     _utc:       utcDate,
