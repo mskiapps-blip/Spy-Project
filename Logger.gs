@@ -118,6 +118,14 @@ function logTick(data, now) {
   var r1Str = formatZone(srZones.resistances[0]);
   var r2Str = formatZone(srZones.resistances[1]);
 
+  // ── Cache S/R flags for AI prompts ────────────────────────
+  // Bear Trap memos, Dashboard brief, and Forecast all read
+  // SESSION_LAST_S1/R1 to give the AI support/resistance context.
+  setFlag("SESSION_LAST_S1", s1Str);
+  setFlag("SESSION_LAST_S2", s2Str);
+  setFlag("SESSION_LAST_R1", r1Str);
+  setFlag("SESSION_LAST_R2", r2Str);
+
   var trendStr = analyzeTrend(data, prevClose, dayOpenPrice);
 
   // Utilities.formatDate on raw UTC now — always correct for CST display

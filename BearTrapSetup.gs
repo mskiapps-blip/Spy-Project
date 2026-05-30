@@ -35,14 +35,25 @@ var BT_COLOR = {
   BG_READY:    "#001a08",   // dark green — flip / enter
   BG_GO:       "#002a0a",   // richer green — BUY CALLS / RIP
 
+  // Row background aliases used by applyBearTrapRowFormat()
+  ROW_EVEN:    "#0a0a12",   // same as BG_ROW
+  ROW_ODD:     "#0d0d18",   // same as BG_ROW_ALT
+  ROW_FLUSH:   "#250000",   // red — flushing / danger
+  ROW_STALL:   "#1a1000",   // amber — stalling
+  ROW_FLIP:    "#001a08",   // dark green — flip detected
+  ROW_BUY:     "#002a0a",   // richer green — buy calls signal
+  ROW_RIP:     "#003a0c",   // brightest green — ripping
+
   // Text
-  TEXT_DIM:    "#7a7a9a",   // timestamps, quiet data
-  TEXT_BASE:   "#d0d0e8",   // normal data
-  TEXT_PRICE:  "#4fc3f7",   // SPY price — cool blue
-  TEXT_RED:    "#ff5252",   // flush / danger
-  TEXT_GOLD:   "#ffca28",   // warnings / stall
-  TEXT_GREEN:  "#69f0ae",   // flip / go signal
-  TEXT_BRIGHT: "#ffffff",   // maximum contrast for alert cells
+  TEXT_DIM:      "#7a7a9a",   // timestamps, quiet data
+  TEXT_BASE:     "#d0d0e8",   // normal data
+  TEXT_PRIMARY:  "#d0d0e8",   // alias for TEXT_BASE
+  TEXT_SECONDARY:"#9090aa",   // subdued text
+  TEXT_PRICE:    "#4fc3f7",   // SPY price — cool blue
+  TEXT_RED:      "#ff5252",   // flush / danger
+  TEXT_GOLD:     "#ffca28",   // warnings / stall
+  TEXT_GREEN:    "#69f0ae",   // flip / go signal
+  TEXT_BRIGHT:   "#ffffff",   // maximum contrast for alert cells
 
   // Header accent
   HDR_TEXT:    "#ff6b6b",   // header label color
@@ -273,17 +284,18 @@ function addBearTrapHeaderNotes(sheet) {
     "🎯 CONFIDENCE SCORE (0–100%)\n─────────────────────\n" +
     "Composite score measuring how closely today matches the pattern.\n\n" +
     "SCORING:\n" +
+    "  +20% Overnight high tagged\n" +
     "  +15% Flush exists (≥0.20%)\n" +
+    "  +15% Flush was FAST (≥0.15%/bar)\n" +
+    "  +15% Momentum flip detected\n" +
+    "  +15% Volume weak during flush\n" +
     "  +10% Strong flush (≥0.40%)\n" +
-    "  +10% Volume weak during flush\n" +
-    "  +10% Price above key support\n" +
-    "  +15% Overnight high tagged\n" +
-    "  +10% Momentum flip detected\n" +
+    "  +10% Rip confirmed\n" +
     "  +10% VIX in NORMAL regime (15–22)\n" +
-    "  +15% ES Futures FADING\n" +
-    "  +10% Flush was FAST (≥0.15%/bar)\n" +
-    "  −15% VIX in FEAR regime (>28)\n" +
-    "  −10% ES Futures CLIMBING\n\n" +
+    "  +10% ES Futures FADING\n" +
+    "  −10% ES CAUTION (futures climbing)\n" +
+    "  −20% VIX in FEAR regime (>28)\n" +
+    "  −30% ES VOID (fading hard >1%)\n\n" +
     "THRESHOLDS:\n" +
     "  ≥75% → ✅ BUY CALLS signal\n" +
     "  50–74% → 🟡 Forming, watch only\n" +
@@ -323,7 +335,7 @@ function addBearTrapHeaderNotes(sheet) {
     "Gap = Open price gap from overnight high\n\n" +
     "🚨 = Price came within 0.15% of overnight high\n\n" +
     "Bear Trap almost always starts with OH tagged.\n" +
-    "OH tagged = +15% confidence."
+    "OH tagged = +20% confidence."
   );
 
   sheet.getRange(h, BTC.AI_MEMO).setNote(
@@ -350,8 +362,8 @@ function setupBearTrapSheetFromMenu() {
     "What's included:\n" +
     "• 🚨 Trap Alert — plain-English signal, loudest column\n" +
     "• 😨 VIX regime check (NORMAL = +10% confidence)\n" +
-    "• 📡 ES Futures trend (FADING = +15% confidence)\n" +
-    "• ⚡ Flush speed scoring (FAST = +10% confidence)\n" +
+    "• 📡 ES Futures trend (FADING = +10% confidence)\n" +
+    "• ⚡ Flush speed scoring (FAST = +15% confidence)\n" +
     "• 🤖 AI memos fire only on phase changes (saves quota)\n" +
     "• 🛑 Early invalidation on ES VOID or VIX FEAR\n\n" +
     "Active: 8:30–9:30am CST  ·  EOD brief: 3:00pm CST\n" +

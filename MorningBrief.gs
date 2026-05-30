@@ -18,7 +18,7 @@ var MB = {
   EOD_MIN:           0,
   EOD_WINDOW_MIN:    10,
   HIT_TOLERANCE_PCT: 0.15,
-  CHART_DATA_START_ROW: 21,   // ← was 20; setup places header at row 20, data starts row 21
+  CHART_DATA_START_ROW: 21,   // setup places header at row 20, data starts row 21
   SETUP_BEAR_TRAP: "🪤 BEAR TRAP",
   SETUP_BULL:      "📈 BULL DAY",
   SETUP_CHOPPY:    "↔️ CHOPPY",
@@ -49,12 +49,10 @@ var MB_CHART_HEADERS = [
 ];
 
 // ─────────────────────────────────────────────────────────────
-// MAIN ENTRY — FIXED
+// MAIN ENTRY
 //
 // toCSTDate(now) returns a safe helper for .getHours()/.getMinutes() only.
 // All Utilities.formatDate calls use `now` (raw UTC Date) directly.
-// Downstream functions (generateMorningBrief, trackPriceTick,
-// gradeEODAccuracy) all receive `now` instead of `cst`.
 // ─────────────────────────────────────────────────────────────
 function runMorningBriefTick(data, now) {
   try {
@@ -75,7 +73,6 @@ function runMorningBriefTick(data, now) {
       sheet = ss.getSheetByName(SHEET_MORNING_BRIEF);
     }
 
-    // Use raw `now` (UTC Date) for Utilities.formatDate — always correct
     var todayStr = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
 
     // ── 8:25 CST: Fire the morning brief ─────────────────────
@@ -112,7 +109,9 @@ function runMorningBriefTick(data, now) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// GENERATE MORNING BRIEF — the one daily AI call
+// GENERATE MORNING BRIEF — fires once at 8:25 CST
+// Uses callGeminiForBrief() from MorningBrief_AI_Section.gs
+// which includes historical win-rate context for better accuracy.
 // now = raw UTC Date
 // ─────────────────────────────────────────────────────────────
 function generateMorningBrief(sheet, data, now, todayStr) {
@@ -141,66 +140,51 @@ function generateMorningBrief(sheet, data, now, todayStr) {
       return;
     }
 
-    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mm a").toLowerCase();
-    var prompt =
-      "SPY Morning Brief at " + timeStr + " CST. " +
-      "SPY prev close: $" + (prevClose > 0 ? prevClose.toFixed(2) : "?") + ". " +
-      "Pre-mkt: $" + (preMarketClose > 0 ? preMarketClose.toFixed(2) : "?") + " (" +
-        (gapPct >= 0 ? "+" : "") + gapPct.toFixed(2) + "% gap). " +
-      "Overnight: H $" + (overnightHigh > 0 ? overnightHigh.toFixed(2) : "?") +
-        " L $" + (overnightLow > 0 ? overnightLow.toFixed(2) : "?") + ". " +
-      "VIX: " + (vixData ? vixData.price.toFixed(2) + " [" + vixData.regime + "]" : "?") + ". " +
-      "ES: " + (esData ? "$" + esData.price.toFixed(2) + " " + esData.trend : "?") + ". " +
-      "Respond ONLY as JSON (no markdown): " +
-      '{"setupType":"🪤 BEAR TRAP or 📈 BULL DAY or ↔️ CHOPPY or ⛔ AVOID",' +
-      '"flushTarget":0.00,"flipZone":0.00,"ripTarget":0.00,"eodTarget":0.00,' +
-      '"rationale":"1-2 sentences","preMarketConf":50}';
+    // ── Check overnight high tag for pre-market confidence ───
+    var ohTagged = false;
+    if (overnightHigh > 0 && data.price > 0) {
+      var distPct = Math.abs((data.price - overnightHigh) / overnightHigh) * 100;
+      ohTagged = distPct <= BT.OVERNIGHT_TAG_PCT;
+    }
 
-    var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
-    var payload = JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 2500, temperature: 0.3 }
-    });
+    // ── Pre-market confidence estimate ───────────────────────
+    var preConf = 30; // baseline
+    if (ohTagged)                                  preConf += 20;
+    if (esData && esData.trend === "FADING")       preConf += 15;
+    if (vixData && vixData.regime === "NORMAL")    preConf += 10;
+    if (gapPct < 0 && Math.abs(gapPct) > 0.1)     preConf += 10;
+    if (esData && esData.alignmentTag === "ES VOID")   preConf -= 30;
+    if (vixData && vixData.regime === "FEAR")          preConf -= 20;
+    preConf = Math.max(0, Math.min(100, preConf));
 
-    var resp = UrlFetchApp.fetch(url, {
-      method: "post", contentType: "application/json",
-      payload: payload, muteHttpExceptions: true
-    });
+    // ── Call the richer AI function from MorningBrief_AI_Section.gs ──
+    // This version includes historical win rate, pattern rate, and
+    // yesterday's result for better calibrated predictions.
+    var pred = callGeminiForBrief(
+      data.price, prevClose,
+      overnightHigh, overnightLow, preMarketClose,
+      gapPct, vixData, esData, ohTagged, preConf
+    );
 
-    if (resp.getResponseCode() !== 200) {
-      Logger.log("MB Gemini error: " + resp.getResponseCode());
+    // If AI call failed, write a placeholder
+    if (!pred) {
+      Logger.log("MB: callGeminiForBrief returned null — writing placeholder.");
+      writeBriefToSheet(sheet, now, todayStr, {
+        setupType: MB.SETUP_CHOPPY, flushTarget: 0, flipZone: 0,
+        ripTarget: 0, eodTarget: 0, rationale: "AI unavailable. Check API key and quota."
+      }, preConf);
       return;
     }
 
-    var json    = JSON.parse(resp.getContentText());
-    var rawText = json.candidates
-               && json.candidates[0]
-               && json.candidates[0].content
-               && json.candidates[0].content.parts
-               && json.candidates[0].content.parts[0]
-                ? json.candidates[0].content.parts[0].text.trim() : "";
-
-    var pred;
-    try {
-      var clean = rawText.replace(/```json|```/g, "").trim();
-      pred = JSON.parse(clean);
-    } catch (e) {
-      Logger.log("MB: JSON parse failed — " + e.message + " raw: " + rawText);
-      pred = {
-        setupType: MB.SETUP_CHOPPY, flushTarget: 0, flipZone: 0,
-        ripTarget: 0, eodTarget: 0, rationale: rawText.substring(0, 120),
-        preMarketConf: 40
-      };
-    }
-
-    var preConf = pred.preMarketConf || 50;
-    setFlag("MB_SETUP_TYPE",   pred.setupType   || MB.SETUP_CHOPPY);
-    setFlag("MB_FLUSH_TARGET", (pred.flushTarget || 0).toString());
-    setFlag("MB_FLIP_ZONE",    (pred.flipZone    || 0).toString());
-    setFlag("MB_RIP_TARGET",   (pred.ripTarget   || 0).toString());
-    setFlag("MB_EOD_TARGET",   (pred.eodTarget   || 0).toString());
-    setFlag("MB_RATIONALE",    pred.rationale    || "");
-    setFlag("MB_HITS",         "0");
+    // ── Store flags for other systems to read ────────────────
+    setFlag("MB_SETUP_TYPE",    pred.setupType   || MB.SETUP_CHOPPY);
+    setFlag("MB_FLUSH_TARGET",  (pred.flushTarget || 0).toString());
+    setFlag("MB_FLIP_ZONE",     (pred.flipZone    || 0).toString());
+    setFlag("MB_RIP_TARGET",    (pred.ripTarget   || 0).toString());
+    setFlag("MB_EOD_TARGET",    (pred.eodTarget   || 0).toString());
+    setFlag("MB_RATIONALE",     pred.rationale    || "");
+    setFlag("MB_PRE_CONF",      preConf.toString());
+    setFlag("MB_HITS",          "0");
     setFlag("MB_TOTAL_TARGETS", "4");
 
     writeBriefToSheet(sheet, now, todayStr, pred, preConf);
@@ -294,14 +278,14 @@ function writeBriefToSheet(sheet, now, todayStr, pred, preConf) {
     sheet.getRange(13, 1, 1, 7).merge().setValue("").setBackground("#222230");
     sheet.setRowHeight(13, 4);
 
-    // Row 14–19: chart data header section
+    // Row 14: tracking label
     sheet.getRange(14, 1, 1, 7).merge()
       .setValue("📈 INTRADAY TRACKING — actual price vs targets (auto-updated every 5 min)")
       .setBackground("#080810").setFontColor("#444466")
       .setFontSize(8).setHorizontalAlignment("center");
     sheet.setRowHeight(14, 18);
 
-    // Chart headers row (row 19 = MB.CHART_DATA_START_ROW - 1)
+    // Chart headers row (row 20 = MB.CHART_DATA_START_ROW - 1)
     var hdrRow = MB.CHART_DATA_START_ROW - 1;
     sheet.getRange(hdrRow, 1, 1, MB_CHART_HEADERS.length)
       .setValues([MB_CHART_HEADERS])

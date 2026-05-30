@@ -83,6 +83,12 @@ function logToScorecard(cst, confidence, signalIssued, signalPrice,
     var newRow = sheet.getLastRow();
     applyScorecardRowFormat(sheet, newRow, result, parseInt(confidence));
 
+    // ── Cache yesterday's result for Morning Brief AI context ─
+    // callGeminiForBrief() reads these to calibrate its daily
+    // setup prediction based on recent performance.
+    setFlag("SC_LAST_GRADE",        grade);
+    setFlag("SC_LAST_CLOSE_VS_OPEN", Math.round(closeVsOpen * 100) / 100 + "%");
+
     // Refresh the rolling stats panel
     updateScorecardStats(sheet);
 
@@ -107,11 +113,11 @@ function updateScorecardStats(sheet) {
     if (dataRows < 1) return;
 
     // Read all result and confidence data
-    var results     = sheet.getRange(dataStartRow, SC.RESULT,     dataRows, 1).getValues();
-    var confs       = sheet.getRange(dataStartRow, SC.CONFIDENCE, dataRows, 1).getValues();
-    var signals     = sheet.getRange(dataStartRow, SC.SIGNAL,     dataRows, 1).getValues();
+    var results     = sheet.getRange(dataStartRow, SC.RESULT,         dataRows, 1).getValues();
+    var confs       = sheet.getRange(dataStartRow, SC.CONFIDENCE,     dataRows, 1).getValues();
+    var signals     = sheet.getRange(dataStartRow, SC.SIGNAL,         dataRows, 1).getValues();
     var patterns    = sheet.getRange(dataStartRow, SC.PATTERN_PLAYED, dataRows, 1).getValues();
-    var aiCalls     = sheet.getRange(dataStartRow, SC.AI_CALLS,   dataRows, 1).getValues();
+    var aiCalls     = sheet.getRange(dataStartRow, SC.AI_CALLS,       dataRows, 1).getValues();
 
     var wins = 0, losses = 0, misses = 0, noTrades = 0;
     var totalConf = 0, confCount = 0;
@@ -119,7 +125,7 @@ function updateScorecardStats(sheet) {
     var totalAI = 0;
 
     // Rolling window: last 20 trading days
-    var windowSize = Math.min(20, dataRows);
+    var windowSize  = Math.min(20, dataRows);
     var windowStart = dataRows - windowSize;
 
     var windowWins = 0, windowLosses = 0, windowMisses = 0;
@@ -155,7 +161,7 @@ function updateScorecardStats(sheet) {
     var patternRate  = dataRows > 0 ? Math.round((patternDays / dataRows) * 100) : 0;
     var avgAI        = dataRows > 0 ? Math.round(totalAI / dataRows) : 0;
 
-    var windowTrades = windowWins + windowLosses;
+    var windowTrades  = windowWins + windowLosses;
     var windowWinRate = windowTrades > 0 ? Math.round((windowWins / windowTrades) * 100) : 0;
 
     // Write stats to the right of headers, starting at row 3, col 13 (M)
@@ -200,7 +206,7 @@ function updateScorecardStats(sheet) {
       .setFontColor("#ffd600").setFontWeight("bold").setFontSize(10);
 
     // Win rate — color by performance
-    var winRateRow = statsRow + 10; // "Win rate (signals):" row
+    var winRateRow  = statsRow + 10;
     var winRateCell = sheet.getRange(winRateRow, statsCol + 1);
     winRateCell.setFontColor(
       winRate >= 70 ? "#00ff99" :
@@ -214,6 +220,11 @@ function updateScorecardStats(sheet) {
       windowWinRate >= 70 ? "#00ff99" :
       windowWinRate >= 50 ? "#ffd600" : "#ff6b6b"
     ).setFontWeight("bold");
+
+    // ── Cache rolling stats for AI prompt context ─────────────
+    // buildSessionContext() in AIAnalyst.gs reads these flags to
+    // include win rate in every AI memo and forecast prompt.
+    cacheSessionContextFlags(winRate, windowWinRate, patternRate, dataRows);
 
     Logger.log("Scorecard stats updated: " + wins + "W/" + losses + "L, winRate=" + winRate + "%");
   } catch (e) {

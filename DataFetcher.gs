@@ -5,6 +5,7 @@
 //          from intraday 5-min bars.
 //          NEW: fetchVIX() and fetchESFutures() for Bear Trap context.
 //          Both are cached per 5-min cycle to avoid extra quota burn.
+//          NEW: fetchPreMarketData() for overnight high/low/close.
 // ============================================================
 
 var YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart/SPY";
@@ -96,6 +97,113 @@ function fetchSPYData() {
 
   } catch (e) {
     Logger.log("fetchSPYData ERROR: " + e.message + "\n" + e.stack);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// PRE-MARKET DATA — overnight high, low, and last price
+// Cached 4 minutes to match VIX/ES cycle.
+//
+// Strategy: fetch 1-minute bars for the full day, then filter
+// to only bars that fall in the pre-market window (before
+// 9:30am ET = before market open). Extract high/low/last
+// from those bars.
+//
+// Returns: { high, low, close } or null on failure.
+//   high:  highest price reached overnight / pre-market
+//   low:   lowest price reached overnight / pre-market
+//   close: most recent pre-market price (last valid bar)
+// ─────────────────────────────────────────────────────────────
+function fetchPreMarketData() {
+  var cache  = CacheService.getScriptCache();
+  var cached = cache.get("PRE_MARKET_DATA");
+  if (cached) {
+    try { return JSON.parse(cached); } catch(e) {}
+  }
+
+  try {
+    // 1-minute bars for today gives us pre-market detail
+    var url  = YAHOO_BASE + "?interval=1m&range=1d";
+    var resp = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    if (resp.getResponseCode() !== 200) {
+      Logger.log("fetchPreMarketData non-200: " + resp.getResponseCode());
+      return null;
+    }
+
+    var json   = JSON.parse(resp.getContentText());
+    var result = json.chart && json.chart.result && json.chart.result[0];
+    if (!result || !result.meta) return null;
+
+    var meta       = result.meta;
+    var timestamps = result.timestamp || [];
+    var quotes     = result.indicators && result.indicators.quote && result.indicators.quote[0];
+    var highs      = (quotes && quotes.high)  || [];
+    var lows       = (quotes && quotes.low)   || [];
+    var closes     = (quotes && quotes.close) || [];
+
+    // Market open in Unix seconds = today at 9:30am ET
+    // Yahoo timestamps are UTC. 9:30am ET = 14:30 UTC (EST) or 13:30 UTC (EDT).
+    // We use the meta.regularMarketTime as the open anchor — anything before
+    // it is pre-market.
+    var marketOpenTs = meta.regularMarketTime || 0;
+
+    // Fallback: if no timestamps, use meta fields directly
+    if (timestamps.length === 0 || marketOpenTs === 0) {
+      var fallbackPrice = meta.regularMarketPrice || meta.chartPreviousClose || 0;
+      if (fallbackPrice === 0) return null;
+      var data = { high: fallbackPrice, low: fallbackPrice, close: fallbackPrice };
+      cache.put("PRE_MARKET_DATA", JSON.stringify(data), 240);
+      return data;
+    }
+
+    // Filter to pre-market bars only (timestamp < market open)
+    var pmHighs  = [];
+    var pmLows   = [];
+    var pmCloses = [];
+
+    for (var i = 0; i < timestamps.length; i++) {
+      if (timestamps[i] >= marketOpenTs) break; // stop at market open
+      var h = highs[i];
+      var l = lows[i];
+      var c = closes[i];
+      if (h != null && h > 0) pmHighs.push(h);
+      if (l != null && l > 0) pmLows.push(l);
+      if (c != null && c > 0) pmCloses.push(c);
+    }
+
+    // If no pre-market bars found (e.g. very early morning before any trading),
+    // fall back to previous close as a reasonable baseline
+    if (pmHighs.length === 0) {
+      var pc = meta.previousClose || meta.chartPreviousClose || 0;
+      if (pc === 0) return null;
+      var data = { high: pc, low: pc, close: pc };
+      cache.put("PRE_MARKET_DATA", JSON.stringify(data), 240);
+      Logger.log("fetchPreMarketData: no pre-market bars found, using prevClose=" + pc);
+      return data;
+    }
+
+    var pmHigh  = Math.max.apply(null, pmHighs);
+    var pmLow   = Math.min.apply(null, pmLows);
+    var pmClose = pmCloses[pmCloses.length - 1]; // most recent pre-market bar
+
+    var data = {
+      high:  Math.round(pmHigh  * 100) / 100,
+      low:   Math.round(pmLow   * 100) / 100,
+      close: Math.round(pmClose * 100) / 100
+    };
+
+    cache.put("PRE_MARKET_DATA", JSON.stringify(data), 240);
+    Logger.log("fetchPreMarketData: high=" + data.high + " low=" + data.low + " close=" + data.close +
+               " (" + pmHighs.length + " pre-market bars)");
+    return data;
+
+  } catch (e) {
+    Logger.log("fetchPreMarketData ERROR: " + e.message);
     return null;
   }
 }
@@ -243,18 +351,25 @@ function fetchESFutures() {
     var distFromHigh = dayHigh > 0 ? ((price - dayHigh) / dayHigh) * 100 : 0;
     if (distFromHigh < -0.15 && trend !== "CLIMBING") trend = "FADING";
 
+    // ── ES alignment tag for Bear Trap ───────────────────────
+    var alignmentTag;
+    if      (changePct < -1.0)  alignmentTag = "ES VOID";
+    else if (changePct >  0.5)  alignmentTag = "ES CAUTION";
+    else                        alignmentTag = "ES MONITOR";
+
     var data = {
       price:        Math.round(price * 100) / 100,
       prevClose:    Math.round(prevClose * 100) / 100,
       change:       Math.round(change * 100) / 100,
       changePct:    Math.round(changePct * 100) / 100,
       trend:        trend,
-      distFromHigh: Math.round(distFromHigh * 100) / 100
+      distFromHigh: Math.round(distFromHigh * 100) / 100,
+      alignmentTag: alignmentTag
     };
 
     // Cache 4 minutes (240 seconds)
     cache.put("ES_FUTURES_DATA", JSON.stringify(data), 240);
-    Logger.log("ES Futures: " + price + " trend=" + trend + " distFromHigh=" + distFromHigh + "%");
+    Logger.log("ES Futures: " + price + " trend=" + trend + " distFromHigh=" + distFromHigh + "% align=" + alignmentTag);
     return data;
 
   } catch (e) {
