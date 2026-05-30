@@ -126,6 +126,7 @@ function runEvery5Minutes() {
     runMorningBriefTick(data, now);
     runDashboardTick(data, now);
     runForecastTick(data, now);                     // ← NEW
+    runAIHealthTick(now);
 
   } catch (e) {
     Logger.log("runEvery5Minutes ERROR: " + e.message + "\n" + e.stack);
