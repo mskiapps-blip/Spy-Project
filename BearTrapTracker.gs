@@ -3,6 +3,13 @@
 // PURPOSE: 🪤 THE BEAR TRAP OPEN — pattern detection system.
 //
 //  All times in CST 12-hour format.
+//
+//  FIX (2025-05-30): Invalidation return moved inside the
+//  once-daily gate. Previously the outer `return` fired on
+//  every tick once invalidated, silencing the sheet for the
+//  rest of the day. Now only the first invalidation tick
+//  returns early; subsequent ticks fall through and keep
+//  logging normal rows.
 // ============================================================
 
 var SHEET_BEAR_TRAP = "🪤 BEAR TRAP";
@@ -100,6 +107,12 @@ function runBearTrapTick(data, now) {
     var metrics = computeBearTrapMetrics(data, cst, vixData, esData);
 
     // ── Early invalidation check ──────────────────────────────
+    // BUG FIX: `return` is now INSIDE the once-daily gate.
+    // Previously the outer return fired on every tick after the
+    // first invalidation, silencing the sheet all day.
+    // Now: first tick writes the invalidation row and returns.
+    // All subsequent ticks skip the write but fall through and
+    // keep logging normal rows for the rest of the active window.
     var invalidReason = getActiveWindowInvalidationReason(vixData, esData, metrics);
     if (invalidReason) {
       var todayStr2    = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
@@ -107,8 +120,9 @@ function runBearTrapTick(data, now) {
       if (invalidFired !== todayStr2) {
         writeInvalidationRow(sheet, data, now, invalidReason);
         setFlag("BT_INVALID_FIRED_TODAY", todayStr2);
+        return; // ← only exit on the FIRST invalidation tick
       }
-      return;
+      // invalidFired already set — fall through and keep tracking
     }
 
     // ── AI memo — gated ───────────────────────────────────────
@@ -264,37 +278,18 @@ function writeEODBrief(sheet, data, now) {
 
     var closeVsOpen = dayOpen > 0 ? ((data.price - dayOpen) / dayOpen) * 100 : 0;
 
-    var eodMemo = getEODAIMemo({
-      confidence: confidence, signalIssued: signalIssued,
-      signalPrice: signalPrice, currentPrice: data.price,
-      maxFlush: maxFlush, flipTime: flipTime,
-      ripDetected: ripDetected, flipDetected: flipDetected,
-      overnightTagged: overnightTagged, closeVsOpen: closeVsOpen,
-      grade: grade, aiCallsUsed: aiCallCount
-    });
+    var eodMemo = getEODAIMemo(data, confidence, signalIssued, patternPlayed,
+                               maxFlush, closeVsOpen, overnightTagged, aiCallCount);
 
-    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mma").toLowerCase();
-
-    // ── Write separator row ───────────────────────────────────
-    var sepRow = new Array(BT_HEADERS.length).fill("");
-    sepRow[0] = "── EOD BRIEF ──";
-    sepRow[BT_HEADERS.length - 1] = "AI calls today: " + aiCallCount + "/10";
-    sheet.appendRow(sepRow);
-    var sep = sheet.getLastRow();
-    sheet.getRange(sep, 1, 1, BT_HEADERS.length)
-      .setBackground(gradeColor).setFontColor("#ffffff")
-      .setFontWeight("bold").setFontSize(9).setFontStyle("italic");
-    sheet.setRowHeight(sep, 20);
-
-    // ── Write summary row ─────────────────────────────────────
     var summaryRow = new Array(BT_HEADERS.length).fill("—");
-    summaryRow[BTC.TIME - 1]         = timeStr;
+    var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mma").toLowerCase();
+    summaryRow[BTC.TIME - 1]         = timeStr + " EOD";
     summaryRow[BTC.PRICE - 1]        = data.price;
-    summaryRow[BTC.PHASE - 1]        = grade;
-    summaryRow[BTC.FLUSH_DEPTH - 1]  = "Max: " + Math.abs(maxFlush).toFixed(2) + "%";
-    summaryRow[BTC.CONFIDENCE - 1]   = confidence + "%";
+    summaryRow[BTC.TRAP_ALERT - 1]   = grade;
+    summaryRow[BTC.PHASE - 1]        = "EOD BRIEF";
+    summaryRow[BTC.CONFIDENCE - 1]   = parseInt(confidence);
     summaryRow[BTC.ENTRY_SIGNAL - 1] = signalIssued === "YES"
-                                        ? "Signal @ $" + signalPrice.toFixed(2) : "No signal";
+      ? "Signal @ $" + signalPrice.toFixed(2) : "No signal";
     summaryRow[BTC.TARGET_PRICE - 1] = "Close vs open: " + closeVsOpen.toFixed(2) + "%";
     summaryRow[BTC.OVERNIGHT - 1]    = "OH tagged: " + (overnightTagged ? "✅" : "❌");
     summaryRow[BTC.AI_MEMO - 1]      = eodMemo || "—";
@@ -362,16 +357,22 @@ function getBearTrapAIMemo(metrics, data, vixData, esData, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 140, temperature: 0.3 }
+      generationConfig: { maxOutputTokens: 2000, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
-      method: "post", contentType: "application/json",
-      payload: payload, muteHttpExceptions: true
+      method:             "post",
+      contentType:        "application/json",
+      payload:            payload,
+      muteHttpExceptions: true
     });
 
-    if (resp.getResponseCode() !== 200) {
-      Logger.log("BT Gemini error: " + resp.getResponseCode());
+    var code = resp.getResponseCode();
+    Logger.log("BT Gemini response code: " + code);
+
+    if (code !== 200) {
+      Logger.log("BT Gemini error: " + resp.getContentText().substring(0, 200));
+      recordAICall(AI_FEATURE.BEAR_TRAP, false);
       return null;
     }
 
@@ -385,65 +386,53 @@ function getBearTrapAIMemo(metrics, data, vixData, esData, now) {
              : null;
 
     if (text) {
-      setFlag("LAST_AI_CALL_TIME", now.getTime().toString());
-      var callCount = parseInt(getFlag("BT_AI_CALL_COUNT") || "0") + 1;
-      setFlag("BT_AI_CALL_COUNT", callCount.toString());
-      setFlag("BT_LAST_AI_PHASE", metrics.phase);
+      var callCount = parseInt(getFlag("BT_AI_CALL_COUNT") || "0");
+      setFlag("BT_AI_CALL_COUNT", (callCount + 1).toString());
+      setFlag("BT_LAST_AI_PHASE",  metrics.phase);
       setFlag("BT_LAST_AI_SIGNAL", metrics.entrySignal);
+      recordAICall(AI_FEATURE.BEAR_TRAP, true);
+      return "🤖 " + text;
     }
-    return text ? "🤖 " + text : null;
+
+    recordAICall(AI_FEATURE.BEAR_TRAP, false);
+    return null;
+
   } catch (e) {
     Logger.log("getBearTrapAIMemo ERROR: " + e.message);
+    recordAICall(AI_FEATURE.BEAR_TRAP, false);
     return null;
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-// BUILD BEAR TRAP PROMPT
+// EOD AI MEMO
 // ─────────────────────────────────────────────────────────────
-function buildBearTrapPrompt(metrics, data, vixData, esData) {
-  var overnightTagged = getFlag("BT_OVERNIGHT_TAGGED") === "YES";
-  return (
-    "SPY Bear Trap open. " +
-    "Price:$" + data.price.toFixed(2) + " " +
-    "phase:" + metrics.phase + " " +
-    "flush:" + metrics.flushDepthPct.toFixed(2) + "% " +
-    (metrics.flushFast ? "FAST " : "SLOW ") +
-    "vol:" + (metrics.volPct > 0 ? metrics.volPct.toFixed(0) + "%" : "?") + " " +
-    "conf:" + metrics.confidence + "% " +
-    "OHtag:" + (overnightTagged ? "Y" : "N") + " " +
-    "flip:" + (metrics.flipDetected ? "Y" : "N") + " " +
-    "VIX:" + (vixData ? vixData.price.toFixed(1) + "/" + vixData.regime : "?") + " " +
-    "ES:" + (esData ? esData.trend : "?") + ". " +
-    "1 sentence: status + action."
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// EOD AI BRIEF
-// ─────────────────────────────────────────────────────────────
-function getEODAIMemo(ctx) {
+function getEODAIMemo(data, confidence, signalIssued, patternPlayed,
+                      maxFlush, closeVsOpen, overnightTagged, aiCallCount) {
   try {
+    if (!shouldAllowAICall(AI_FEATURE.BEAR_TRAP_EOD)) {
+      Logger.log("BT EOD: AI skipped by quota guard.");
+      return null;
+    }
+
     var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
     if (!apiKey) return null;
 
     var prompt =
-      "Bear Trap EOD. " +
-      "Conf:" + ctx.confidence + "% " +
-      "signal:" + ctx.signalIssued + (ctx.signalPrice > 0 ? "@$" + ctx.signalPrice.toFixed(2) : "") + " " +
-      "flush:" + Math.abs(ctx.maxFlush).toFixed(2) + "% " +
-      "flip:" + ctx.flipDetected + "@" + ctx.flipTime + " " +
-      "rip:" + ctx.ripDetected + " " +
-      "OHtag:" + ctx.overnightTagged + " " +
-      "close/open:" + ctx.closeVsOpen.toFixed(2) + "% " +
-      "grade:" + ctx.grade + " " +
-      "AIcalls:" + ctx.aiCallsUsed + "/10. " +
-      "2-3 sentences: accurate? key signal today?";
+      "SPY Bear Trap EOD debrief.\n" +
+      "Confidence peak: " + confidence + "%\n" +
+      "Signal issued: " + signalIssued + "\n" +
+      "Pattern played: " + (patternPlayed ? "YES" : "NO") + "\n" +
+      "Max flush: " + Math.abs(maxFlush).toFixed(2) + "%\n" +
+      "Close vs open: " + closeVsOpen.toFixed(2) + "%\n" +
+      "Overnight high tagged: " + (overnightTagged ? "YES" : "NO") + "\n" +
+      "AI calls used today: " + aiCallCount + "\n" +
+      "2 sentences: grade today's pattern quality and one lesson for tomorrow.";
 
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 150, temperature: 0.4 }
+      generationConfig: { maxOutputTokens: 2000, temperature: 0.3 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -451,16 +440,24 @@ function getEODAIMemo(ctx) {
       payload: payload, muteHttpExceptions: true
     });
 
-    if (resp.getResponseCode() !== 200) return null;
+    if (resp.getResponseCode() !== 200) {
+      Logger.log("BT EOD Gemini error: " + resp.getResponseCode());
+      recordAICall(AI_FEATURE.BEAR_TRAP_EOD, false);
+      return null;
+    }
 
     var json = JSON.parse(resp.getContentText());
-    return json.candidates
-        && json.candidates[0]
-        && json.candidates[0].content
-        && json.candidates[0].content.parts
-        && json.candidates[0].content.parts[0]
-         ? "🤖 EOD: " + json.candidates[0].content.parts[0].text.trim()
-         : null;
+    var text = json.candidates
+            && json.candidates[0]
+            && json.candidates[0].content
+            && json.candidates[0].content.parts
+            && json.candidates[0].content.parts[0]
+             ? json.candidates[0].content.parts[0].text.trim()
+             : null;
+
+    recordAICall(AI_FEATURE.BEAR_TRAP_EOD, !!text);
+    return text ? "🤖 EOD: " + text : null;
+
   } catch (e) {
     Logger.log("getEODAIMemo ERROR: " + e.message);
     return null;
@@ -632,18 +629,18 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   else { phase = PHASE.WATCH; }
 
   var score = 0;
-  if (overnightTagged)                                   score += 20;
-  if (flushExists)                                       score += 15;
-  if (flushStrong)                                       score += 10;
-  if (flushFast)                                         score += 15;
-  if (volWeak && flushExists)                            score += 15;
-  if (flipDetected)                                      score += 15;
-  if (ripDetected)                                       score += 10;
-  if (vixData && vixData.regime === "NORMAL")            score += BT.SCORE_VIX_NORMAL;
-  if (esData && esData.trend === "FADING" && flushExists) score += 10;
-  if (esData && esData.alignmentTag === "ES CAUTION")    score -= 10;
-  if (esData && esData.alignmentTag === "ES VOID")       score -= 30;
-  if (vixData && vixData.regime === "FEAR")              score -= 20;
+  if (overnightTagged)                                    score += 20;
+  if (flushExists)                                        score += 15;
+  if (flushStrong)                                        score += 10;
+  if (flushFast)                                          score += 15;
+  if (volWeak && flushExists)                             score += 15;
+  if (flipDetected)                                       score += 15;
+  if (ripDetected)                                        score += 10;
+  if (vixData && vixData.regime === "NORMAL")             score += BT.SCORE_VIX_NORMAL;
+  if (esData  && esData.trend === "FADING" && flushExists) score += 10;
+  if (esData  && esData.alignmentTag === "ES CAUTION")    score -= 10;
+  if (esData  && esData.alignmentTag === "ES VOID")       score -= 30;
+  if (vixData && vixData.regime === "FEAR")               score -= 20;
   score = Math.max(0, Math.min(100, score));
 
   setFlag("BT_LAST_CONFIDENCE", score.toString());
@@ -655,6 +652,12 @@ function computeBearTrapMetrics(data, cst, vixData, esData) {
   if (ripDetected) {
     trapAlert   = "🚀 RIP CONFIRMED — Manage position";
     entrySignal = "🚀 RIP IN PROGRESS";
+  } else if (score >= 75 && flipDetected) {
+    targetPrice = flushExists
+      ? Math.round(parseFloat(getFlag("BT_FLUSH_LOW") || price) * (1 + BT.CALL_CONFIRM_PCT / 100) * 100) / 100
+      : null;
+    trapAlert   = "✅ ENTER CALLS NOW — Target $" + (targetPrice ? targetPrice.toFixed(2) : "?");
+    entrySignal = "✅ BUY CALLS — Conf " + score + "%";
   } else if (flipDetected) {
     targetPrice = flushExists
       ? Math.round(parseFloat(getFlag("BT_FLUSH_LOW") || price) * (1 + BT.CALL_CONFIRM_PCT / 100) * 100) / 100
@@ -711,41 +714,52 @@ function applyBearTrapRowFormat(sheet, rowNum, metrics, vixData, esData) {
   try {
     sheet.setRowHeight(rowNum, 26);
 
-    var rowBg = (rowNum % 2 === 0) ? BT_COLOR.BG_ROW_ALT : BT_COLOR.BG_ROW;
-    if (metrics.ripDetected)                          rowBg = BT_COLOR.BG_GO;
-    else if (metrics.flipDetected)                    rowBg = BT_COLOR.BG_READY;
-    else if (metrics.confidence >= 50 && metrics.flushExists) rowBg = BT_COLOR.BG_DANGER;
-    else if (metrics.confidence >= 35 && metrics.flushExists) rowBg = BT_COLOR.BG_CAUTION;
+    var rowBg = (rowNum % 2 === 0) ? BT_COLOR.ROW_EVEN : BT_COLOR.ROW_ODD;
 
-    sheet.getRange(rowNum, 1, 1, BT_HEADERS.length)
-      .setBackground(rowBg)
-      .setFontColor(BT_COLOR.TEXT_BASE)
-      .setFontFamily(BT_FONT.DATA)
-      .setFontSize(9)
-      .setVerticalAlignment("middle");
+    if      (metrics.ripDetected)                         rowBg = BT_COLOR.ROW_RIP;
+    else if (metrics.entrySignal.indexOf("BUY") !== -1)   rowBg = BT_COLOR.ROW_BUY;
+    else if (metrics.flipDetected)                        rowBg = BT_COLOR.ROW_FLIP;
+    else if (metrics.phase === PHASE.STALL)               rowBg = BT_COLOR.ROW_STALL;
+    else if (metrics.confidence >= 50 && metrics.flushExists) rowBg = BT_COLOR.ROW_FLUSH;
 
-    sheet.getRange(rowNum, BTC.TIME).setFontColor(BT_COLOR.TEXT_DIM).setHorizontalAlignment("center");
-    sheet.getRange(rowNum, BTC.PRICE).setFontFamily(BT_FONT.MONO).setFontColor(BT_COLOR.TEXT_PRICE).setFontWeight("bold").setFontSize(10).setNumberFormat("$#,##0.00").setHorizontalAlignment("center");
-    sheet.getRange(rowNum, BTC.TRAP_ALERT).setFontFamily(BT_FONT.ALERT).setFontSize(10).setWrap(true);
-    sheet.getRange(rowNum, BTC.PHASE).setFontColor(
-      metrics.ripDetected  ? BT_COLOR.TEXT_GREEN :
-      metrics.flipDetected ? BT_COLOR.TEXT_GOLD  :
-      metrics.flushExists  ? BT_COLOR.TEXT_RED   : BT_COLOR.TEXT_DIM
-    ).setHorizontalAlignment("center").setFontWeight("bold");
-    sheet.getRange(rowNum, BTC.FLUSH_DEPTH).setFontFamily(BT_FONT.MONO).setHorizontalAlignment("center")
-      .setFontColor(metrics.flushDepthPct < -0.3 ? BT_COLOR.TEXT_RED : BT_COLOR.TEXT_GOLD);
-    sheet.getRange(rowNum, BTC.FLUSH_SPEED).setFontSize(8).setHorizontalAlignment("center")
-      .setFontColor(metrics.flushFast ? BT_COLOR.TEXT_GREEN : BT_COLOR.TEXT_DIM);
-    sheet.getRange(rowNum, BTC.VOL_SIGNAL).setFontSize(8).setHorizontalAlignment("center")
-      .setFontColor(metrics.volPct < BT.VOLUME_WEAK_PCT ? BT_COLOR.TEXT_GREEN : BT_COLOR.TEXT_DIM);
-    if (esData) {
-      sheet.getRange(rowNum, BTC.ES_TREND).setFontSize(8).setHorizontalAlignment("center")
+    sheet.getRange(rowNum, 1, 1, BT_HEADERS.length).setBackground(rowBg);
+
+    sheet.getRange(rowNum, BTC.TIME).setFontColor(BT_COLOR.TEXT_DIM).setFontSize(9).setFontFamily(BT_FONT.MONO).setHorizontalAlignment("center");
+    sheet.getRange(rowNum, BTC.PRICE).setFontColor(BT_COLOR.TEXT_PRIMARY).setFontSize(10).setFontFamily(BT_FONT.MONO).setFontWeight("bold").setHorizontalAlignment("center");
+
+    var trapCell = sheet.getRange(rowNum, BTC.TRAP_ALERT);
+    trapCell.setFontSize(9).setFontWeight("bold").setWrap(false);
+    if      (metrics.ripDetected)                             trapCell.setFontColor(BT_COLOR.TEXT_GREEN);
+    else if (metrics.entrySignal.indexOf("BUY") !== -1)       trapCell.setFontColor(BT_COLOR.TEXT_GREEN);
+    else if (metrics.flipDetected)                            trapCell.setFontColor(BT_COLOR.TEXT_GOLD);
+    else if (metrics.confidence >= 50 && metrics.flushExists) trapCell.setFontColor(BT_COLOR.TEXT_RED);
+    else                                                      trapCell.setFontColor(BT_COLOR.TEXT_DIM);
+
+    sheet.getRange(rowNum, BTC.PHASE).setFontColor(BT_COLOR.TEXT_SECONDARY).setFontSize(9).setHorizontalAlignment("center");
+    sheet.getRange(rowNum, BTC.FLUSH_DEPTH).setFontFamily(BT_FONT.MONO).setFontColor(
+      metrics.flushDepthPct < -0.40 ? BT_COLOR.TEXT_RED :
+      metrics.flushDepthPct < 0     ? BT_COLOR.TEXT_GOLD : BT_COLOR.TEXT_DIM
+    ).setFontSize(9).setHorizontalAlignment("center");
+    sheet.getRange(rowNum, BTC.FLUSH_SPEED).setFontColor(BT_COLOR.TEXT_DIM).setFontSize(8).setHorizontalAlignment("center");
+    sheet.getRange(rowNum, BTC.VOLUME).setFontColor(BT_COLOR.TEXT_SECONDARY).setFontSize(9).setHorizontalAlignment("center");
+
+    if (vixData) {
+      sheet.getRange(rowNum, BTC.VIX).setFontSize(9).setHorizontalAlignment("center")
         .setFontColor(
-          !esData ? BT_COLOR.TEXT_DIM :
-          esData.trend === "FADING"   ? BT_COLOR.TEXT_GREEN :
-          esData.trend === "CLIMBING" ? BT_COLOR.TEXT_RED   : BT_COLOR.TEXT_GOLD
+          vixData.regime === "FEAR"     ? BT_COLOR.TEXT_RED  :
+          vixData.regime === "ELEVATED" ? BT_COLOR.TEXT_GOLD :
+          vixData.regime === "NORMAL"   ? BT_COLOR.TEXT_GREEN : BT_COLOR.TEXT_DIM
         );
     }
+    if (esData) {
+      sheet.getRange(rowNum, BTC.ES_TREND).setFontSize(9).setHorizontalAlignment("center")
+        .setFontColor(
+          esData.alignmentTag === "ES VOID"    ? BT_COLOR.TEXT_RED  :
+          esData.trend         === "FADING"    ? BT_COLOR.TEXT_GREEN :
+          esData.trend         === "CLIMBING"  ? BT_COLOR.TEXT_RED  : BT_COLOR.TEXT_GOLD
+        );
+    }
+
     var conf = metrics.confidence;
     sheet.getRange(rowNum, BTC.CONFIDENCE).setHorizontalAlignment("center").setFontFamily(BT_FONT.MONO).setFontWeight("bold").setFontSize(10)
       .setFontColor(conf >= 75 ? BT_COLOR.TEXT_GREEN : conf >= 50 ? BT_COLOR.TEXT_GOLD : conf >= 30 ? "#ff8a65" : BT_COLOR.TEXT_RED);
