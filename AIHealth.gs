@@ -7,10 +7,12 @@
 //            • Failure tracking (count + last failure time)
 //            • Health classification: 🟢 HEALTHY / 🟡 DEGRADED / 🔴 DOWN
 //            • Soft / hard daily quota guard
+//            • Skip counter for quota-blocked calls
+//            • appendAIHealthLog() feeds the 🤖 AI HEALTH sheet log
 //
 //  Each AI call function calls:
 //    1. shouldAllowAICall(feature)  — before the fetch
-//    2. recordAICall(feature, true/false) — after the fetch
+//    2. recordAICall(feature, true/false, detail) — after the fetch
 //
 //  Balanced quota:
 //    • Non-critical calls (large-move, dashboard) skip at 200/day
@@ -58,8 +60,9 @@ var AI_HEALTH_CFG = {
 // Call AFTER the Gemini fetch resolves.
 //   feature = one of AI_FEATURE.* (string)
 //   success = true if Gemini returned usable content
+//   detail  = optional short string for the health log
 // ─────────────────────────────────────────────────────────────
-function recordAICall(feature, success) {
+function recordAICall(feature, success, detail) {
   try {
     aiResetCounterIfNewDay();
 
@@ -75,11 +78,13 @@ function recordAICall(feature, success) {
     if (success) {
       setFlag("AI_LAST_SUCCESS_" + feature, nowMs.toString());
       setFlag("AI_LAST_SUCCESS_ANY",        nowMs.toString());
+      appendAIHealthLog(feature, "OK", detail || "");
     } else {
       var failCount = parseInt(getFlag("AI_FAILURES_TODAY") || "0") + 1;
       setFlag("AI_FAILURES_TODAY",       failCount.toString());
       setFlag("AI_LAST_FAILURE_TIME",    nowMs.toString());
       setFlag("AI_LAST_FAILURE_FEATURE", feature);
+      appendAIHealthLog(feature, "FAIL", detail || "");
     }
 
     var failsToday = getFlag("AI_FAILURES_TODAY") || "0";
@@ -105,6 +110,9 @@ function shouldAllowAICall(feature) {
     if (totalCalls >= AI_QUOTA.DAILY_HARD_CAP) {
       Logger.log("AIHealth: HARD CAP reached (" + totalCalls + "/" +
                  AI_QUOTA.DAILY_HARD_CAP + ") — blocking " + feature);
+      var skipped = parseInt(getFlag("AI_SKIPPED_TODAY") || "0") + 1;
+      setFlag("AI_SKIPPED_TODAY", skipped.toString());
+      appendAIHealthLog(feature, "SKIP", "hard cap reached (" + totalCalls + ")");
       return false;
     }
 
@@ -112,6 +120,9 @@ function shouldAllowAICall(feature) {
         AI_QUOTA.NON_CRITICAL.indexOf(feature) !== -1) {
       Logger.log("AIHealth: SOFT CAP reached (" + totalCalls + "/" +
                  AI_QUOTA.DAILY_SOFT_CAP + ") — skipping non-critical: " + feature);
+      var skipped2 = parseInt(getFlag("AI_SKIPPED_TODAY") || "0") + 1;
+      setFlag("AI_SKIPPED_TODAY", skipped2.toString());
+      appendAIHealthLog(feature, "SKIP", "soft cap — non-critical (" + totalCalls + ")");
       return false;
     }
 
@@ -220,6 +231,7 @@ function aiResetCounterIfNewDay() {
     setFlag("AI_HEALTH_DATE",    todayStr);
     setFlag("AI_CALLS_TODAY",    "0");
     setFlag("AI_FAILURES_TODAY", "0");
+    setFlag("AI_SKIPPED_TODAY",  "0");
 
     for (var key in AI_FEATURE) {
       setFlag("AI_CALLS_" + AI_FEATURE[key], "0");
@@ -256,6 +268,7 @@ function showAIHealthFromMenu() {
     var h          = getAIHealthStatus();
     var callsToday = getFlag("AI_CALLS_TODAY")    || "0";
     var failsToday = getFlag("AI_FAILURES_TODAY") || "0";
+    var skipped    = getFlag("AI_SKIPPED_TODAY")  || "0";
 
     var lines = [];
     for (var key in AI_FEATURE) {
@@ -269,7 +282,7 @@ function showAIHealthFromMenu() {
       "🤖 AI HEALTH STATUS\n\n" +
       h.label + "\n" +
       h.detail + "\n\n" +
-      "Today: " + callsToday + " calls  ·  " + failsToday + " fails\n" +
+      "Today: " + callsToday + " calls  ·  " + failsToday + " fails  ·  " + skipped + " skipped\n" +
       "Soft cap: " + AI_QUOTA.DAILY_SOFT_CAP + "  ·  Hard cap: " + AI_QUOTA.DAILY_HARD_CAP + "\n\n" +
       "PER-FEATURE:\n" +
       lines.join("\n")

@@ -9,6 +9,11 @@
 //    Row 2 (AI  rows 12–17):  CARD_L = AI Status        | CARD_R = ES Alignment (Bear Trap)
 //    Row 3 (ES  rows 19–25):  CARD_L = VIX Regime       | CARD_R = ES Futures (Bear Trap Signal)
 //    Row 4 (BR  rows 27–37):  full-width AI Briefing
+//
+//  UPDATES:
+//    • generateDashboardBrief: maxOutputTokens 400 → 800 (fixes truncation)
+//    • recordAICall(AI_FEATURE.DASHBOARD, ...) added on all return paths
+//    • appendAIHealthLog() feeds the 🤖 AI HEALTH sheet log
 // ============================================================
 
 var SHEET_DASHBOARD = "🖥️ DASHBOARD";
@@ -124,15 +129,7 @@ var ES_ALIGN = {
 };
 
 // ─────────────────────────────────────────────────────────────
-// MAIN ENTRY — FIXED
-//
-// toCSTDate(now) returns a plain helper object used ONLY for
-// .getHours() / .getMinutes() / .getDay() logic.
-//
-// All Utilities.formatDate calls use `now` (raw UTC Date) directly
-// because Utilities.formatDate handles timezone conversion correctly.
-// Card writers (writeSPYCard, writeBriefCard, etc.) now receive
-// `now` instead of `cst` so their internal formatDate calls work.
+// MAIN ENTRY
 // ─────────────────────────────────────────────────────────────
 function runDashboardTick(data, now) {
   try {
@@ -154,16 +151,14 @@ function runDashboardTick(data, now) {
 
     var shouldBrief = shouldFireDashboardBrief(cstMins, dow);
 
-    // Pass `now` (raw UTC Date) — not `cst` — to all card writers
     writeSPYCard(sheet, data, now);
     writeMarketCard(sheet, cstMins, dow);
     writeAICard(sheet, cstMins, dow);
-    writeESAlignmentCard(sheet, esData);  // ← CARD_R at AI rows (was blank/stale)
-    writeVIXCard(sheet, vixData);         // ← CARD_L at ES rows
-    writeESCard(sheet, esData);           // ← CARD_R at ES rows
+    writeESAlignmentCard(sheet, esData);
+    writeVIXCard(sheet, vixData);
+    writeESCard(sheet, esData);
     writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldBrief);
 
-    // Subtitle — Utilities.formatDate works correctly on raw UTC Date
     var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mm a").toLowerCase();
     var dateStr = Utilities.formatDate(now, "America/Chicago", "EEE MMM d, yyyy");
     sheet.getRange(DR.SUBTITLE, 1, 1, 7).merge()
@@ -208,7 +203,6 @@ function writeCardField(sheet, row, col, labelTxt, valueTxt, valueFg, valueSz, i
 
 // ─────────────────────────────────────────────────────────────
 // CARD 1 — SPY PRICE
-// now = raw UTC Date for Utilities.formatDate
 // ─────────────────────────────────────────────────────────────
 function writeSPYCard(sheet, data, now) {
   try {
@@ -349,8 +343,6 @@ function writeAICard(sheet, cstMins, dow) {
 
 // ─────────────────────────────────────────────────────────────
 // CARD 3b — ES ALIGNMENT  (CARD_R at AI rows 12–17)
-// Shows the Bear Trap alignment tag — this slot was previously
-// blank/stale, causing the phantom "top ES box".
 // ─────────────────────────────────────────────────────────────
 function writeESAlignmentCard(sheet, esData) {
   try {
@@ -389,7 +381,6 @@ function writeESAlignmentCard(sheet, esData) {
     var trendColor  = esData.trend === "FADING"   ? DB.TXT_RED
                     : esData.trend === "CLIMBING" ? DB.TXT_GREEN : DB.TXT_GOLD;
 
-    // Big alignment tag
     sheet.getRange(DR.AI_MODE, col)
       .setValue(alignEmoji + "  " + alignTag)
       .setBackground(DB.BG_CARD).setFontColor(alignColor)
@@ -397,7 +388,6 @@ function writeESAlignmentCard(sheet, esData) {
       .setHorizontalAlignment("left").setVerticalAlignment("middle");
     sheet.setRowHeight(DR.AI_MODE, 30);
 
-    // Trend line
     sheet.getRange(DR.AI_WATCH, col)
       .setValue(esData.trend + "  ·  " + (esData.changePct >= 0 ? "+" : "") + esData.changePct.toFixed(2) + "%")
       .setBackground(DB.BG_CARD).setFontColor(trendColor)
@@ -408,7 +398,6 @@ function writeESAlignmentCard(sheet, esData) {
     sheet.getRange(DR.AI_DIV, col).setValue("").setBackground(DB.BG_DIVIDER);
     sheet.setRowHeight(DR.AI_DIV, 2);
 
-    // Action line
     sheet.getRange(DR.AI_NEXT, col)
       .setValue(alignAction)
       .setBackground(DB.BG_CARD).setFontColor(DB.TXT_DIM)
@@ -421,9 +410,8 @@ function writeESAlignmentCard(sheet, esData) {
   } catch (e) { Logger.log("writeESAlignmentCard ERROR: " + e.message); }
 }
 
-
-// This card was missing — its absence left stale content in
-// CARD_L at these rows, causing the phantom "second ES box".
+// ─────────────────────────────────────────────────────────────
+// CARD 4a — VIX (CARD_L at ES rows 19–25)
 // ─────────────────────────────────────────────────────────────
 function writeVIXCard(sheet, vixData) {
   try {
@@ -451,23 +439,19 @@ function writeVIXCard(sheet, vixData) {
       return;
     }
 
-    // VIX price color: green = low/normal, gold = elevated, red = fear
     var vixColor = vixData.regime === "LOW"      ? DB.TXT_GREEN
                  : vixData.regime === "NORMAL"   ? DB.TXT_CYAN
                  : vixData.regime === "ELEVATED" ? DB.TXT_ORANGE
-                 : DB.TXT_RED;  // FEAR
+                 : DB.TXT_RED;
 
-    // Change color
-    var chgColor = vixData.change >= 0 ? DB.TXT_RED : DB.TXT_GREEN;  // VIX up = bad (red), down = good (green)
+    var chgColor = vixData.change >= 0 ? DB.TXT_RED : DB.TXT_GREEN;
     var chgSign  = vixData.change >= 0 ? "+" : "";
 
-    // Regime description
     var regimeDesc = vixData.regime === "LOW"      ? "🟢 Low Volatility — calm market"
                    : vixData.regime === "NORMAL"   ? "🔵 Normal Volatility"
                    : vixData.regime === "ELEVATED" ? "🟡 Elevated — exercise caution"
                    : "🔴 FEAR — high volatility environment";
 
-    // Trader action hint
     var regimeAction = vixData.regime === "LOW"      ? "Spreads tight. Momentum plays favored."
                      : vixData.regime === "NORMAL"   ? "Standard risk management applies."
                      : vixData.regime === "ELEVATED" ? "⚠️ Widen stops. Reduce size."
@@ -580,27 +564,23 @@ function writeESCard(sheet, esData) {
 
 // ─────────────────────────────────────────────────────────────
 // CARD 5 — AI BRIEFING (full width)
-// now = raw UTC Date for Utilities.formatDate
 // ─────────────────────────────────────────────────────────────
 function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldBrief) {
   try {
     var lastBriefMins = parseInt(getFlag("DASHBOARD_LAST_BRIEF_MINS") || "-1");
     var briefText     = getFlag("DASHBOARD_LAST_BRIEF_TEXT") || "⏳ Waiting for first briefing...";
 
-    // A valid brief must be substantial (≥80 chars) and end with sentence punctuation
     var lastChar      = briefText.length > 0 ? briefText[briefText.length - 1] : "";
     var hasValidBrief = (lastBriefMins >= 0
                          && briefText.length >= 80
                          && (lastChar === "." || lastChar === "!" || lastChar === "?"));
 
-    // If stored brief is garbage, reset it so the placeholder shows instead
     if (!hasValidBrief && briefText !== "⏳ Waiting for first briefing...") {
       briefText = "⏳ Waiting for first briefing...";
     }
 
     var postedStr    = hasValidBrief ? minsToTimeStr(lastBriefMins) + " cst" : "not yet posted";
 
-    // During overnight with no valid brief, don't show a confusing far-future time
     var mode         = getDashboardBriefMode(cstMins, dow);
     var nextBriefStr = (mode === "OVERNIGHT")
                        ? "pre-market  (~" + Math.round(((8 * 60) - cstMins + 1440) % 1440 / 60) + " hr)"
@@ -616,7 +596,7 @@ function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldB
         mode          = getDashboardBriefMode(cstMins, dow);
         nextBriefStr  = getNextBriefTimeStr(cstMins, dow);
       } else {
-        Logger.log("writeBriefCard: generateDashboardBrief returned null — keeping previous brief, not updating posted time.");
+        Logger.log("writeBriefCard: generateDashboardBrief returned null — keeping previous brief.");
       }
     }
 
@@ -659,12 +639,18 @@ function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldB
 
 // ─────────────────────────────────────────────────────────────
 // GENERATE DASHBOARD BRIEF via Gemini
-// now = raw UTC Date
+// UPDATED: maxOutputTokens 400 → 800 (fixes truncation)
+//          recordAICall + appendAIHealthLog on all paths
 // ─────────────────────────────────────────────────────────────
 function generateDashboardBrief(data, esData, vixData, now) {
   try {
     var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
     if (!apiKey) return "⚙️ Add GEMINI_API_KEY in Script Properties to enable briefings.";
+
+    if (!shouldAllowAICall(AI_FEATURE.DASHBOARD)) {
+      Logger.log("Dashboard brief skipped by quota guard.");
+      return null;
+    }
 
     var timeStr = Utilities.formatDate(now, "America/Chicago", "h:mm a").toLowerCase();
     var price   = data ? data.price : 0;
@@ -681,7 +667,7 @@ function generateDashboardBrief(data, esData, vixData, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 400, temperature: 0.4 }
+      generationConfig: { maxOutputTokens: 800, temperature: 0.4 }
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -691,6 +677,7 @@ function generateDashboardBrief(data, esData, vixData, now) {
 
     if (resp.getResponseCode() !== 200) {
       Logger.log("Dashboard brief Gemini error: " + resp.getResponseCode());
+      recordAICall(AI_FEATURE.DASHBOARD, false, "HTTP " + resp.getResponseCode());
       return null;
     }
 
@@ -703,21 +690,23 @@ function generateDashboardBrief(data, esData, vixData, now) {
          ? json.candidates[0].content.parts[0].text.trim()
          : null;
 
-    // Reject truncated responses — must be at least 80 chars and end with
-    // sentence-ending punctuation. If not, return null so we don't save garbage.
     if (!text || text.length < 80) {
-      Logger.log("Dashboard brief rejected — too short (" + (text ? text.length : 0) + " chars): " + text);
+      Logger.log("Dashboard brief rejected — too short (" + (text ? text.length : 0) + " chars)");
+      recordAICall(AI_FEATURE.DASHBOARD, false, "too short (" + (text ? text.length : 0) + " chars)");
       return null;
     }
     var lastChar = text[text.length - 1];
     if (lastChar !== "." && lastChar !== "!" && lastChar !== "?") {
       Logger.log("Dashboard brief rejected — appears truncated, last char: '" + lastChar + "'");
+      recordAICall(AI_FEATURE.DASHBOARD, false, "truncated at '" + lastChar + "'");
       return null;
     }
 
+    recordAICall(AI_FEATURE.DASHBOARD, true, "brief generated");
     return text;
   } catch (e) {
     Logger.log("generateDashboardBrief ERROR: " + e.message);
+    recordAICall(AI_FEATURE.DASHBOARD, false, "exception: " + e.message);
     return null;
   }
 }
@@ -812,8 +801,8 @@ function getMarketStatus(cstMins, dow) {
     };
   }
 
-  var openMins  = 8 * 60 + 30;   // 8:30 CST
-  var closeMins = 15 * 60;       // 3:00 CST
+  var openMins  = 8 * 60 + 30;
+  var closeMins = 15 * 60;
 
   if (cstMins < openMins) {
     var minsToOpen = openMins - cstMins;
@@ -907,10 +896,8 @@ function setupDashboardSheet(ss) {
   if (!sheet) sheet = ss.insertSheet(SHEET_DASHBOARD);
   sheet.setTabColor("#00bcd4");
 
-  // Ensure 7 columns
   if (sheet.getMaxColumns() < 7) sheet.insertColumnsAfter(sheet.getMaxColumns(), 7 - sheet.getMaxColumns());
 
-  // Column widths
   sheet.setColumnWidth(DC.GAP_L,   8);
   sheet.setColumnWidth(DC.CARD_L, 310);
   sheet.setColumnWidth(DC.GAP_M,   8);
@@ -919,13 +906,10 @@ function setupDashboardSheet(ss) {
   sheet.setColumnWidth(DC.WIDE,   310);
   sheet.setColumnWidth(DC.GAP_END,  8);
 
-  // Ensure enough rows
   if (sheet.getMaxRows() < 40) sheet.insertRowsAfter(sheet.getMaxRows(), 40 - sheet.getMaxRows());
 
-  // Base background
   sheet.getRange(1, 1, 40, 7).setBackground(DB.BG_SHEET);
 
-  // Banner
   sheet.getRange(DR.BANNER, 1, 1, 7).merge()
     .setValue("🖥️  MISSION CONTROL  ·  SPY TRACKER")
     .setBackground(DB.BG_BANNER).setFontColor(DB.TXT_BANNER)
@@ -933,14 +917,12 @@ function setupDashboardSheet(ss) {
     .setHorizontalAlignment("center").setVerticalAlignment("middle");
   sheet.setRowHeight(DR.BANNER, 36);
 
-  // Subtitle placeholder
   sheet.getRange(DR.SUBTITLE, 1, 1, 7).merge()
     .setValue("loading...")
     .setFontColor(DB.TXT_DIM).setFontSize(8)
     .setHorizontalAlignment("center").setBackground(DB.BG_BANNER);
   sheet.setRowHeight(DR.SUBTITLE, 16);
 
-  // Gap rows
   [DR.GAP_1, DR.GAP_2, DR.GAP_3, DR.GAP_4, DR.GAP_5].forEach(function(r) {
     sheet.getRange(r, 1, 1, 7).setBackground(DB.BG_GAP);
     sheet.setRowHeight(r, 6);
