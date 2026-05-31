@@ -1,9 +1,9 @@
 // ============================================================
-// FILE: Code.gs  (UPDATED — includes Forecast Sheet integration)
+// FILE: Code.gs  (UPDATED — includes AI Health Sheet integration)
 // PURPOSE: Main entry point. Handles the 5-minute trigger,
 //          market open/close checks, and wires everything together.
 //          Includes: 🪤 Bear Trap, 📊 Scorecard, 🌅 Morning Brief,
-//          🖥️ Dashboard, 📡 Forecast.
+//          🖥️ Dashboard, 📡 Forecast, 🤖 AI Health.
 // ============================================================
 
 // ─────────────────────────────────────────────────────────────
@@ -13,7 +13,8 @@ var SHEET_LOG           = "SPY LOG";
 var SHEET_CONFIG        = "CONFIG";
 var SHEET_HOLIDAYS      = "HOLIDAYS";
 var SHEET_DASHBOARD     = "🖥️ DASHBOARD";
-var SHEET_FORECAST      = "📡 FORECAST";           // ← NEW
+var SHEET_FORECAST      = "📡 FORECAST";
+var SHEET_AI_HEALTH     = "🤖 AI HEALTH";    // ← AI Health sheet
 
 // ─────────────────────────────────────────────────────────────
 // MARKET HOURS (Eastern Time)
@@ -43,35 +44,35 @@ function runEvery5Minutes() {
 
     if (!BYPASS_MARKET_HOURS) {
 
-      // ── Day-of-week extracted safely in ET via Utilities.formatDate ─
-      // "u" = 1(Mon)–7(Sun); % 7 maps to 0=Sun … 6=Sat (matches .getDay())
       var dayOfWeek = parseInt(Utilities.formatDate(now, "America/New_York", "u"), 10) % 7;
 
-      // ── Weekends: dashboard + forecast (every 4 hrs) ─────────
+      // ── Weekends: dashboard + forecast + health ────────────
       if (dayOfWeek === 0 || dayOfWeek === 6) {
-        Logger.log("Weekend — running dashboard + forecast only.");
+        Logger.log("Weekend — running dashboard + forecast + health only.");
         setFlag("MARKET_OPEN_TODAY", "NO");
         var wkData = fetchSPYData();
         if (wkData) {
           runDashboardTick(wkData, now);
-          runForecastTick(wkData, now);             // ← NEW
+          runForecastTick(wkData, now);
         }
+        runAIHealthTick(now);
         return;
       }
 
-      // ── Holidays: dashboard + forecast ────────────────────────
+      // ── Holidays: dashboard + forecast + health ────────────
       if (isTodayHoliday(now)) {
-        Logger.log("Holiday — running dashboard + forecast only.");
+        Logger.log("Holiday — running dashboard + forecast + health only.");
         setFlag("MARKET_OPEN_TODAY", "NO");
         var hlData = fetchSPYData();
         if (hlData) {
           runDashboardTick(hlData, now);
-          runForecastTick(hlData, now);             // ← NEW
+          runForecastTick(hlData, now);
         }
+        runAIHealthTick(now);
         return;
       }
 
-      // ── Market closed: overnight dashboard + EOD hooks ────────
+      // ── Market closed: overnight dashboard + EOD hooks ────
       if (!isMarketOpen(now)) {
         var etH = parseInt(Utilities.formatDate(now, "America/New_York", "H"),  10);
         var etM = parseInt(Utilities.formatDate(now, "America/New_York", "mm"), 10);
@@ -86,12 +87,13 @@ function runEvery5Minutes() {
           runBearTrapTick(closingData, now);
           runMorningBriefTick(closingData, now);
           runDashboardTick(closingData, now);
-          runForecastTick(closingData, now);        // ← NEW
+          runForecastTick(closingData, now);
         }
+        runAIHealthTick(now);
         return;
       }
 
-      // ── Pre-market Morning Brief window (8:25 CST = 9:25 ET) ──
+      // ── Pre-market Morning Brief window (8:25 CST = 9:25 ET)
       var etHour = parseInt(Utilities.formatDate(now, "America/New_York", "H"),  10);
       var etMin  = parseInt(Utilities.formatDate(now, "America/New_York", "mm"), 10);
       var etMins = etHour * 60 + etMin;
@@ -100,8 +102,9 @@ function runEvery5Minutes() {
         if (preData) {
           runMorningBriefTick(preData, now);
           runDashboardTick(preData, now);
-          runForecastTick(preData, now);            // ← NEW
+          runForecastTick(preData, now);
         }
+        runAIHealthTick(now);
         return;
       }
 
@@ -125,8 +128,8 @@ function runEvery5Minutes() {
     runBearTrapTick(data, now);
     runMorningBriefTick(data, now);
     runDashboardTick(data, now);
-    runForecastTick(data, now);                     // ← NEW
-    runAIHealthTick(now);
+    runForecastTick(data, now);
+    runAIHealthTick(now);               // ← AI Health always runs last
 
   } catch (e) {
     Logger.log("runEvery5Minutes ERROR: " + e.message + "\n" + e.stack);
@@ -158,7 +161,8 @@ function runManualTick() {
     runBearTrapTick(data, now);
     runMorningBriefTick(data, now);
     runDashboardTick(data, now);
-    runForecastTick(data, now);                     // ← NEW
+    runForecastTick(data, now);
+    runAIHealthTick(now);               // ← AI Health in manual tick too
 
     SpreadsheetApp.getUi().alert(
       "✅ Tick logged!\n" +
@@ -169,7 +173,8 @@ function runManualTick() {
       "  🌅 MORNING BRIEF\n" +
       "  🪤 BEAR TRAP\n" +
       "  📊 SCORECARD\n" +
-      "  📡 FORECAST"                               // ← NEW
+      "  📡 FORECAST\n" +
+      "  🤖 AI HEALTH"
     );
 
   } catch (e) {
@@ -243,8 +248,11 @@ function ensureSheetsExist(ss) {
   if (!ss.getSheetByName(SHEET_DASHBOARD)) {
     setupDashboardSheet(ss);
   }
-  if (!ss.getSheetByName(SHEET_FORECAST)) {   // ← NEW
+  if (!ss.getSheetByName(SHEET_FORECAST)) {
     setupForecastSheet(ss);
+  }
+  if (!ss.getSheetByName(SHEET_AI_HEALTH)) {    // ← AI Health sheet
+    setupAIHealthSheet(ss);
   }
 }
 
@@ -262,16 +270,18 @@ function onOpen() {
     .addItem("🌅  Setup Morning Brief Sheet",     "setupMorningBriefSheetFromMenu")
     .addItem("🪤  Setup Bear Trap Sheet",         "setupBearTrapSheetFromMenu")
     .addItem("📊  Setup Scorecard Sheet",         "setupScorecardSheetFromMenu")
-    .addItem("📡  Setup Forecast Sheet",          "setupForecastSheetFromMenu")  // ← NEW
+    .addItem("📡  Setup Forecast Sheet",          "setupForecastSheetFromMenu")
+    .addItem("🤖  Setup AI Health Sheet",         "setupAIHealthSheetFromMenu")   // ← NEW
     .addSeparator()
     .addItem("▶️  Run Now (Manual Tick)",         "runManualTick")
     .addItem("🖥️  Refresh Dashboard Now",         "runManualDashboardRefresh")
     .addItem("🌅  Run Morning Brief Now",         "runManualMorningBrief")
-    .addItem("📡  Run Forecast Now",              "runManualForecast")            // ← NEW
+    .addItem("📡  Run Forecast Now",              "runManualForecast")
+    .addItem("🤖  Refresh AI Health Now",         "runManualAIHealthRefresh")     // ← NEW
     .addSeparator()
     .addItem("⏰  Install 5-Min Trigger",         "installTrigger")
     .addItem("🛑  Remove All Triggers",           "removeAllTriggers")
-    .addItem("🤖  Show AI Health",  "showAIHealthFromMenu")
+    .addItem("🤖  Show AI Health Popup",          "showAIHealthFromMenu")
     .addToUi();
 }
 
@@ -305,7 +315,7 @@ function finalizeDaySummary() {
     setFlag("TICK_COUNT",    "0");
     setFlag("DAY_OPEN_PRICE", "");
     setFlag("DAY_FINALIZED",  todayStr);
-    resetDailyForecastFlags();                      // ← NEW
+    resetDailyForecastFlags();
     Logger.log("Day finalized: " + todayStr);
   } catch (e) {
     Logger.log("finalizeDaySummary ERROR: " + e.message);
@@ -353,9 +363,6 @@ function isMarketOpen(utcDate) {
 
 // ─────────────────────────────────────────────────────────────
 // GET CURRENT TIME — returns raw UTC Date
-// All timezone rendering is handled downstream via
-// Utilities.formatDate(..., "America/New_York", ...) for ET logic
-// and Utilities.formatDate(..., "America/Chicago", ...) for CST display.
 // ─────────────────────────────────────────────────────────────
 function getCurrentEasternTime() {
   return new Date();

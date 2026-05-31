@@ -10,10 +10,10 @@
 //    Row 3 (ES  rows 19–25):  CARD_L = VIX Regime       | CARD_R = ES Futures (Bear Trap Signal)
 //    Row 4 (BR  rows 27–37):  full-width AI Briefing
 //
-//  UPDATES:
+//  CHANGES vs prior version:
 //    • generateDashboardBrief: maxOutputTokens 400 → 800 (fixes truncation)
-//    • recordAICall(AI_FEATURE.DASHBOARD, ...) added on all return paths
-//    • appendAIHealthLog() feeds the 🤖 AI HEALTH sheet log
+//    • recordAICall(AI_FEATURE.DASHBOARD, ...) wired on all return paths
+//    • appendAIHealthLog() wired on all return paths
 // ============================================================
 
 var SHEET_DASHBOARD = "🖥️ DASHBOARD";
@@ -411,7 +411,7 @@ function writeESAlignmentCard(sheet, esData) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CARD 4a — VIX (CARD_L at ES rows 19–25)
+// CARD 4 — VIX REGIME  (CARD_L at ES rows 19–25)
 // ─────────────────────────────────────────────────────────────
 function writeVIXCard(sheet, vixData) {
   try {
@@ -639,8 +639,10 @@ function writeBriefCard(sheet, data, esData, vixData, now, cstMins, dow, shouldB
 
 // ─────────────────────────────────────────────────────────────
 // GENERATE DASHBOARD BRIEF via Gemini
-// UPDATED: maxOutputTokens 400 → 800 (fixes truncation)
-//          recordAICall + appendAIHealthLog on all paths
+//
+// CHANGES:
+//   • maxOutputTokens: 400 → 800  (fixes brief truncation)
+//   • recordAICall() + appendAIHealthLog() on ALL return paths
 // ─────────────────────────────────────────────────────────────
 function generateDashboardBrief(data, esData, vixData, now) {
   try {
@@ -667,7 +669,7 @@ function generateDashboardBrief(data, esData, vixData, now) {
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 800, temperature: 0.4 }
+      generationConfig: { maxOutputTokens: 800, temperature: 0.4 }  // ← was 400
     });
 
     var resp = UrlFetchApp.fetch(url, {
@@ -704,6 +706,7 @@ function generateDashboardBrief(data, esData, vixData, now) {
 
     recordAICall(AI_FEATURE.DASHBOARD, true, "brief generated");
     return text;
+
   } catch (e) {
     Logger.log("generateDashboardBrief ERROR: " + e.message);
     recordAICall(AI_FEATURE.DASHBOARD, false, "exception: " + e.message);

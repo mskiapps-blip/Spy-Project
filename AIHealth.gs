@@ -7,12 +7,12 @@
 //            • Failure tracking (count + last failure time)
 //            • Health classification: 🟢 HEALTHY / 🟡 DEGRADED / 🔴 DOWN
 //            • Soft / hard daily quota guard
-//            • Skip counter for quota-blocked calls
-//            • appendAIHealthLog() feeds the 🤖 AI HEALTH sheet log
+//            • Skip counter (AI_SKIPPED_TODAY)
+//            • appendAIHealthLog() calls on every outcome
 //
 //  Each AI call function calls:
-//    1. shouldAllowAICall(feature)  — before the fetch
-//    2. recordAICall(feature, true/false, detail) — after the fetch
+//    1. shouldAllowAICall(feature)          — before the fetch
+//    2. recordAICall(feature, true/false)   — after the fetch
 //
 //  Balanced quota:
 //    • Non-critical calls (large-move, dashboard) skip at 200/day
@@ -231,7 +231,7 @@ function aiResetCounterIfNewDay() {
     setFlag("AI_HEALTH_DATE",    todayStr);
     setFlag("AI_CALLS_TODAY",    "0");
     setFlag("AI_FAILURES_TODAY", "0");
-    setFlag("AI_SKIPPED_TODAY",  "0");
+    setFlag("AI_SKIPPED_TODAY",  "0");  // ← reset skip counter each day
 
     for (var key in AI_FEATURE) {
       setFlag("AI_CALLS_" + AI_FEATURE[key], "0");
