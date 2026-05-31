@@ -329,6 +329,62 @@ function finalizeDaySummary() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// MARKET OPEN CHECK
+// ─────────────────────────────────────────────────────────────
+function isMarketOpen(utcDate) {
+  var etH   = parseInt(Utilities.formatDate(utcDate, "America/New_York", "H"),  10);
+  var etM   = parseInt(Utilities.formatDate(utcDate, "America/New_York", "mm"), 10);
+  var total = etH * 60 + etM;
+  var open  = MARKET_OPEN_HOUR  * 60 + MARKET_OPEN_MIN;
+  var close = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MIN;
+  return total >= open && total < close;
+}
+
+// ─────────────────────────────────────────────────────────────
+// GET CURRENT TIME — returns raw UTC Date
+// ─────────────────────────────────────────────────────────────
+function getCurrentEasternTime() {
+  return new Date();
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONFIG FLAG HELPERS
+// ─────────────────────────────────────────────────────────────
+function setFlag(key, value) {
+  try {
+    var ss     = SpreadsheetApp.getActiveSpreadsheet();
+    var config = ss.getSheetByName(SHEET_CONFIG);
+    if (!config) return;
+    var data = config.getDataRange().getValues();
+    for (var i = 0; i < data.length; i++) {
+      if (String(data[i][0]) === String(key)) {
+        config.getRange(i + 1, 2).setValue(value);
+        return;
+      }
+    }
+    config.appendRow([key, value, ""]);
+  } catch (e) {
+    Logger.log("setFlag ERROR (" + key + "): " + e.message);
+  }
+}
+
+function getFlag(key) {
+  try {
+    var ss     = SpreadsheetApp.getActiveSpreadsheet();
+    var config = ss.getSheetByName(SHEET_CONFIG);
+    if (!config) return null;
+    var data = config.getDataRange().getValues();
+    for (var i = 0; i < data.length; i++) {
+      if (String(data[i][0]) === String(key)) return data[i][1];
+    }
+    return null;
+  } catch (e) {
+    Logger.log("getFlag ERROR (" + key + "): " + e.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // CLEAR LOG DATA
 // ─────────────────────────────────────────────────────────────
 function clearLogData() {
