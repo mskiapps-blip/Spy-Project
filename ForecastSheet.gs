@@ -8,23 +8,33 @@
 //                         confidence (1–10), AI memo, actual price
 //                         (filled in as the day progresses).
 //    2. Intraday Chart  — Line chart: solid actual price line +
-//                         ghost forecast line. X-axis always spans
-//                         full session 8:30am–3:00pm CST.
+//                         dashed forecast line. Uses a single
+//                         contiguous helper range (cols H–J,
+//                         hidden) to avoid multi-range chart
+//                         rendering failures in Google Sheets.
 //
-//  CHART NOTE:
-//    The chart always renders because the predicted price column
-//    is always populated after the first forecast. The actual
-//    line grows in as the day progresses. Before market open
-//    only the gold forecast line is visible — that is correct.
+//  ACCURACY IMPROVEMENTS:
+//    1. DIFF HISTORY FEEDBACK — Last 3 days of AM/PM avg diff
+//       injected into every prompt via buildDiffHistoryContext()
+//       from ForecastAccuracyLog.gs, so AI self-corrects bias.
+//    2. VIX-AWARE CONFIDENCE — High VIX crushes PM confidence;
+//       low VIX allows holding confidence further out.
+//    3. SLOT LOCKING / MID-DAY RE-ANCHOR — Already-filled
+//       actual slots are locked (not overwritten). Only future
+//       slots are re-forecasted. Past actuals are passed to AI
+//       as hard anchors.
+//    4. INTRADAY BIAS DETECTION — First 4+ completed slots'
+//       running avg diff injected into remaining-slot prompt.
+//    5. ACCURACY LOGGER — logForecastAccuracy() called on every
+//       actual-price fill. Locked at 3:00 PM CST EOD slot.
 //
-//  AI CONTEXT (enriched):
-//    • SPY price, OHLC, VWAP
-//    • VIX regime + ES futures trend
-//    • Morning Brief targets (flush/flip/rip/EOD)
-//    • S1/R1 support & resistance levels from Logger
-//    • Bear Trap phase + confidence score
-//    • Volume vs 30-day average
-//    • Last 12 SPY LOG ticks
+//  CHART FIX:
+//    Multi-range addRange() is unreliable in Google Sheets API
+//    and was causing empty chart boxes. Solution: a hidden
+//    chart-data helper block (cols 8–10, rows 5–19) is written
+//    with Time / Predicted / Actual as a single contiguous
+//    range. The chart uses ONLY this one range. This is the
+//    robust pattern that always renders correctly.
 //
 //  All times displayed in CST 12-hour format.
 // ============================================================
@@ -41,18 +51,25 @@ var FC = {
   GAP_ROW:          4,
   HEADER_ROW:       5,
   DATA_START_ROW:   6,   // rows 6–19 = 14 forecast slots
-  DATA_END_ROW:     19,  // row 19 = 3:00 PM slot
-  GAP2_ROW:         20,  // gap after data
-  CHART_ANCHOR_ROW: 22,  // chart placed here
+  DATA_END_ROW:     19,
+  GAP2_ROW:         20,
+  CHART_ANCHOR_ROW: 22,
 
-  COL_TIME:         1,
-  COL_PRED:         2,
-  COL_CONF:         3,
-  COL_MEMO:         4,
-  COL_ACTUAL:       5,
-  COL_DIFF:         6,
+  // Visible columns
+  COL_TIME:         1,   // A
+  COL_PRED:         2,   // B
+  COL_CONF:         3,   // C
+  COL_MEMO:         4,   // D
+  COL_ACTUAL:       5,   // E
+  COL_DIFF:         6,   // F
+  COL_GAP:          7,   // G — spacer
 
-  TOTAL_COLS:       6,
+  // Hidden chart-data helper columns (never shown to user)
+  COL_CH_TIME:      8,   // H — chart: time label
+  COL_CH_PRED:      9,   // I — chart: predicted price
+  COL_CH_ACTUAL:    10,  // J — chart: actual price
+
+  TOTAL_COLS:       10,
 
   MARKET_OPEN_MIN:  510,   // 8:30 CST
   MARKET_CLOSE_MIN: 900,   // 3:00 CST
@@ -63,8 +80,7 @@ var FC = {
   COOLDOWN_MIN:           120,
 
   SLOT_COUNT: 14
-  // 8:30, 9:00, 9:30, 10:00, 10:30, 11:00, 11:30,
-  // 12:00, 12:30, 1:00, 1:30, 2:00, 2:30, 3:00
+  // [510,540,570,600,630,660,690,720,750,780,810,840,870,900]
 };
 
 // Market session slots — CST minutes from midnight
@@ -74,7 +90,6 @@ var FORECAST_SLOTS = (function() {
     slots.push(m);
   }
   return slots;
-  // [510,540,570,600,630,660,690,720,750,780,810,840,870,900] = 14 entries
 })();
 
 // ─────────────────────────────────────────────────────────────
@@ -191,6 +206,11 @@ function generateForecast(sheet, data, now) {
       return;
     }
 
+    if (!shouldAllowAICall(AI_FEATURE.FORECAST)) {
+      Logger.log("FC: AI quota exceeded — skipping forecast.");
+      return;
+    }
+
     Logger.log("FC: Generating new forecast...");
 
     var cstMins  = fcGetCSTMins(now);
@@ -207,9 +227,23 @@ function generateForecast(sheet, data, now) {
     var mbRationale = getFlag("MB_RATIONALE")               || "";
     var recentContext = buildRecentLogContext();
 
+    // Cache VIX for accuracy log
+    if (vixData && vixData.price > 0) {
+      setFlag("FC_LAST_VIX", vixData.price.toFixed(1));
+    }
+
+    // Read existing actuals for slot-locking
+    var existingActuals = [];
+    for (var i = 0; i < FC.SLOT_COUNT; i++) {
+      var cell = sheet.getRange(FC.DATA_START_ROW + i, FC.COL_ACTUAL).getValue();
+      existingActuals[i] = (cell && cell !== "" && !isNaN(parseFloat(cell)))
+        ? parseFloat(cell) : null;
+    }
+
     var prompt = buildForecastPrompt(data, now, cstMins, vixData, esData,
                                      mbSetup, mbFlush, mbFlip, mbRip, mbEod,
-                                     mbRationale, recentContext, timeStr);
+                                     mbRationale, recentContext, timeStr,
+                                     existingActuals);
 
     var url     = GEMINI_ENDPOINT + "?key=" + apiKey;
     var payload = JSON.stringify({
@@ -225,8 +259,11 @@ function generateForecast(sheet, data, now) {
     if (resp.getResponseCode() !== 200) {
       Logger.log("FC Gemini error: " + resp.getResponseCode() + " — " +
                  resp.getContentText().substring(0, 200));
+      recordAICall(AI_FEATURE.FORECAST, false);
       return;
     }
+
+    recordAICall(AI_FEATURE.FORECAST, true);
 
     var json    = JSON.parse(resp.getContentText());
     var rawText = json.candidates
@@ -245,7 +282,8 @@ function generateForecast(sheet, data, now) {
     try {
       parsed = JSON.parse(clean);
     } catch (parseErr) {
-      Logger.log("FC: JSON parse error — " + parseErr.message + "\nRaw: " + clean.substring(0, 300));
+      Logger.log("FC: JSON parse error — " + parseErr.message +
+                 "\nRaw: " + clean.substring(0, 300));
       return;
     }
 
@@ -254,13 +292,15 @@ function generateForecast(sheet, data, now) {
       return;
     }
 
-    writeForecastRows(sheet, parsed.slots, now, cstMins);
+    writeForecastRows(sheet, parsed.slots, now, cstMins, existingActuals);
+    updateChartHelperRange(sheet);
+    buildForecastChart(sheet);
 
     var nextMins = cstMins + (
       (cstMins >= FC.MARKET_OPEN_MIN && cstMins < FC.MARKET_CLOSE_MIN)
         ? FC.MARKET_INTERVAL_MIN : FC.OVERNIGHT_INTERVAL_MIN
     );
-    sheet.getRange(FC.META_ROW, 1, 1, FC.TOTAL_COLS).merge()
+    sheet.getRange(FC.META_ROW, 1, 1, FC.COL_DIFF).merge()
       .setValue("🕐  Last updated: " + timeStr + " CST  ·  Next update: ~" +
                 fcMinsToLabel(nextMins % 1440) + " CST")
       .setFontColor(FC_COLOR.TXT_META).setFontSize(9)
@@ -274,7 +314,6 @@ function generateForecast(sheet, data, now) {
       setFlag("FC_EARLY_AM_FIRED_TODAY", todayStr);
     }
 
-    buildForecastChart(sheet);
     Logger.log("FC: Forecast generated and chart rebuilt at " + timeStr);
 
   } catch (e) {
@@ -284,27 +323,35 @@ function generateForecast(sheet, data, now) {
 
 // ─────────────────────────────────────────────────────────────
 // BUILD FORECAST PROMPT
-// Enriched with S/R levels, Bear Trap phase/confidence, volume.
-// Scorecard win rate intentionally excluded per user preference.
+//
+// Improvements integrated:
+//   1. DIFF HISTORY — from buildDiffHistoryContext() in AccuracyLog
+//   2. VIX-AWARE CONFIDENCE DECAY — injected as prompt rule
+//   3. SLOT LOCKING — past actuals passed as anchors; AI only
+//      generates future slots; locked rows not overwritten
+//   4. INTRADAY BIAS — running avg of completed-slot diffs
+//      injected if 4+ actuals exist
 // ─────────────────────────────────────────────────────────────
 function buildForecastPrompt(data, now, cstMins, vixData, esData,
                               mbSetup, mbFlush, mbFlip, mbRip, mbEod,
-                              mbRationale, recentContext, timeStr) {
+                              mbRationale, recentContext, timeStr,
+                              existingActuals) {
 
   var vixStr = vixData ? vixData.price.toFixed(1) + " [" + vixData.regime + "]" : "unknown";
   var esStr  = esData  ? "$" + esData.price.toFixed(2) + " " + esData.trend    : "unknown";
+  var vixVal = vixData ? vixData.price : 0;
 
-  // ── S/R levels from Logger flags ─────────────────────────
+  // ── S/R levels ────────────────────────────────────────────
   var s1 = getFlag("SESSION_LAST_S1") || "—";
   var s2 = getFlag("SESSION_LAST_S2") || "—";
   var r1 = getFlag("SESSION_LAST_R1") || "—";
   var r2 = getFlag("SESSION_LAST_R2") || "—";
 
   // ── Bear Trap context ─────────────────────────────────────
-  var btPhase = getFlag("BT_LAST_PHASE")      || "—";
-  var btConf  = getFlag("BT_LAST_CONFIDENCE") || "—";
-  var btFlip  = getFlag("BT_FLIP_DETECTED")   === "YES" ? "YES" : "NO";
-  var btRip   = getFlag("BT_RIP_DETECTED")    === "YES" ? "YES" : "NO";
+  var btPhase = getFlag("BT_LAST_PHASE")       || "—";
+  var btConf  = getFlag("BT_LAST_CONFIDENCE")  || "—";
+  var btFlip  = getFlag("BT_FLIP_DETECTED")    === "YES" ? "YES" : "NO";
+  var btRip   = getFlag("BT_RIP_DETECTED")     === "YES" ? "YES" : "NO";
   var btOHTag = getFlag("BT_OVERNIGHT_TAGGED") === "YES" ? "YES" : "NO";
 
   // ── Volume context ────────────────────────────────────────
@@ -334,7 +381,134 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
             (mbRationale ? "  Rationale: " + mbRationale + "\n" : "");
   }
 
+  // ── IMPROVEMENT #3: Slot locking — build anchor context ──
+  // Count which slots already have actuals; build anchor list
+  // Only future slots need to be forecast.
+  var lockedCount      = 0;
+  var anchorLines      = [];
+  var firstFutureSlot  = 0;
+  var completedDiffs   = [];
+
+  for (var i = 0; i < FC.SLOT_COUNT; i++) {
+    var actual = existingActuals ? existingActuals[i] : null;
+    if (actual && actual > 0) {
+      lockedCount++;
+      anchorLines.push(fcMinsToLabel(FORECAST_SLOTS[i]) + ": ACTUAL=$" + actual.toFixed(2));
+
+      // Collect diffs for intraday bias detection
+      // We'd need the predicted price too — read it from flags or accept approximation
+      // We pass this via the running diff avg computed below
+    } else {
+      if (lockedCount > 0 && firstFutureSlot === 0) firstFutureSlot = i;
+    }
+  }
+  if (firstFutureSlot === 0 && lockedCount === 0) firstFutureSlot = 0;
+
+  // ── IMPROVEMENT #4: Intraday bias detection ───────────────
+  // Read today's intraday bias from the accuracy log sheet if ≥4 actuals
+  var intradayBiasStr = "";
+  if (lockedCount >= 4) {
+    try {
+      var ss       = SpreadsheetApp.getActiveSpreadsheet();
+      var logSheet = ss.getSheetByName(SHEET_FC_ACCURACY);
+      var todayStr = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
+
+      if (logSheet) {
+        var lastRow = logSheet.getLastRow();
+        if (lastRow >= 4) {
+          // Find today's row
+          var searchStart = Math.max(4, lastRow - 5);
+          var dateVals    = logSheet.getRange(searchStart, FCA.DATE,
+                            lastRow - searchStart + 1, 1).getValues();
+          for (var d = dateVals.length - 1; d >= 0; d--) {
+            if (dateVals[d][0] === todayStr) {
+              var todayRow  = searchStart + d;
+              var amAvgNow  = logSheet.getRange(todayRow, FCA.AM_AVG).getValue();
+              var dayAvgNow = logSheet.getRange(todayRow, FCA.DAY_AVG).getValue();
+              if (amAvgNow !== "—" && amAvgNow !== "" && !isNaN(parseFloat(amAvgNow))) {
+                var amV  = parseFloat(amAvgNow);
+                var dayV = parseFloat(dayAvgNow) || 0;
+                intradayBiasStr =
+                  "INTRADAY BIAS (today so far, " + lockedCount + " slots completed):\n" +
+                  "  Running avg diff: " + (dayV >= 0 ? "+" : "") + dayV.toFixed(2) + "\n" +
+                  "  AM avg diff:      " + (amV  >= 0 ? "+" : "") + amV.toFixed(2) + "\n" +
+                  "  " + (Math.abs(dayV) > 0.20
+                    ? (dayV > 0
+                        ? "AI is running BEARISH today — raise remaining slot prices accordingly."
+                        : "AI is running BULLISH today — lower remaining slot prices accordingly.")
+                    : "Bias is within tolerance — no major adjustment needed.") + "\n";
+              }
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      Logger.log("FC: Intraday bias read error: " + e.message);
+    }
+  }
+
+  // ── IMPROVEMENT #1: Diff history from accuracy log ────────
+  var diffHistory = "";
+  try {
+    diffHistory = buildDiffHistoryContext();
+  } catch (e) {
+    Logger.log("FC: buildDiffHistoryContext error: " + e.message);
+  }
+
+  // ── IMPROVEMENT #2: VIX-aware confidence rule ─────────────
+  var vixConfRule;
+  if (vixVal >= 25) {
+    vixConfRule = "VIX is ELEVATED (" + vixVal.toFixed(1) + " ≥ 25): " +
+                  "max confidence 7 for any slot. " +
+                  "Cap PM slots (after 12:00 PM) at confidence 5. " +
+                  "Reflect high uncertainty in all memos.";
+  } else if (vixVal >= 18) {
+    vixConfRule = "VIX is MODERATE (" + vixVal.toFixed(1) + ", 18–24): " +
+                  "normal confidence decay. " +
+                  "PM slots (after 1:00 PM) max confidence 7.";
+  } else if (vixVal > 0) {
+    vixConfRule = "VIX is LOW (" + vixVal.toFixed(1) + " < 18): " +
+                  "confidence can remain higher further out. " +
+                  "PM slots may hold confidence up to 8 if signals align.";
+  } else {
+    vixConfRule = "VIX unknown — apply normal confidence decay (higher near-term, lower far out).";
+  }
+
+  // ── Build slot instructions ───────────────────────────────
   var slotLabels = FORECAST_SLOTS.map(function(m) { return fcMinsToLabel(m); }).join(", ");
+
+  // Future-only slot list (slots that still need prediction)
+  var futureSlotsNeeded = [];
+  for (var fi = 0; fi < FC.SLOT_COUNT; fi++) {
+    if (!existingActuals || !existingActuals[fi] || existingActuals[fi] <= 0) {
+      futureSlotsNeeded.push(fcMinsToLabel(FORECAST_SLOTS[fi]));
+    }
+  }
+
+  var anchorContext = anchorLines.length > 0
+    ? "=== LOCKED ACTUALS (DO NOT change these — generate future slots only) ===\n" +
+      anchorLines.join("\n") + "\n\n"
+    : "";
+
+  var intradaySection = intradayBiasStr
+    ? "=== TODAY'S INTRADAY BIAS ===\n" + intradayBiasStr + "\n"
+    : "";
+
+  var diffSection = diffHistory
+    ? diffHistory + "\n\n"
+    : "";
+
+  // Build the slot template — only for future slots
+  var slotTemplate = futureSlotsNeeded.map(function(lbl) {
+    return '{"time":"' + lbl + '","price":0.00,"conf":5,"memo":"16 words max"}';
+  }).join(",\n");
+
+  // If all slots are locked (shouldn't happen but guard it)
+  if (futureSlotsNeeded.length === 0) {
+    Logger.log("FC: All slots locked — skipping generation.");
+    return null;
+  }
 
   var prompt =
     "You are a quantitative SPY price analyst. Current time: " + timeStr + " CST.\n\n" +
@@ -361,32 +535,23 @@ function buildForecastPrompt(data, now, cstMins, vixData, esData,
     "Overnight high tagged: " + btOHTag + "\n\n" +
     (mbStr ? "=== MORNING BRIEF CONTEXT ===\n" + mbStr + "\n" : "") +
     (recentContext ? "=== RECENT PRICE ACTION (last 12 ticks) ===\n" + recentContext + "\n\n" : "") +
+    anchorContext +
+    intradaySection +
+    diffSection +
     "=== INSTRUCTIONS ===\n" +
-    "Generate a full-day SPY price forecast for all 14 slots: " + slotLabels + ".\n" +
+    "Generate SPY price forecasts for these " + futureSlotsNeeded.length +
+    " remaining slots: " + futureSlotsNeeded.join(", ") + ".\n\n" +
     "STRICT RULES — you MUST follow these exactly:\n" +
     "  1. Return ONLY raw JSON, no markdown, no backticks, no extra text.\n" +
     "  2. Every memo MUST be 16 words or less.\n" +
-    "  3. ALL 14 slots required — do not skip any.\n" +
-    "  4. Price to 2 decimal places, conf is integer 1-10.\n" +
-    "  5. Use S/R levels and Bear Trap phase to inform price targets.\n\n" +
-    "Return this exact structure with ALL 14 slots:\n" +
-    '{"slots":[' +
-    '{"time":"8:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"9:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"9:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"10:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"10:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"11:00 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"11:30 AM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"12:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"12:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"1:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"1:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"2:00 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"2:30 PM","price":0.00,"conf":5,"memo":"16 words max"},' +
-    '{"time":"3:00 PM","price":0.00,"conf":5,"memo":"16 words max"}' +
-    ']}\n\n' +
-    "All 14 slots required: " + slotLabels;
+    "  3. Only generate the " + futureSlotsNeeded.length +
+            " future slots listed — do not include locked actuals.\n" +
+    "  4. Price to 2 decimal places, conf is integer 1–10.\n" +
+    "  5. Use S/R levels and Bear Trap phase to inform price targets.\n" +
+    "  6. VIX CONFIDENCE RULE: " + vixConfRule + "\n" +
+    "  7. Apply bias correction from accuracy history and intraday bias above.\n\n" +
+    "Return this exact structure:\n" +
+    '{"slots":[\n' + slotTemplate + '\n]}';
 
   return prompt;
 }
@@ -427,38 +592,64 @@ function buildRecentLogContext() {
 
 // ─────────────────────────────────────────────────────────────
 // WRITE FORECAST ROWS
+//
+// IMPROVEMENT #3: Slot locking
+// — If a slot already has an actual price, its PRED/CONF/MEMO
+//   are NOT overwritten. Only future slots get new AI values.
+// — existingActuals[] is passed in so we know which to skip.
 // ─────────────────────────────────────────────────────────────
-function writeForecastRows(sheet, slots, now, cstMins) {
+function writeForecastRows(sheet, slots, now, cstMins, existingActuals) {
   try {
-    var existingActuals = [];
-    for (var i = 0; i < FC.SLOT_COUNT; i++) {
-      var cell = sheet.getRange(FC.DATA_START_ROW + i, FC.COL_ACTUAL).getValue();
-      existingActuals[i] = (cell && cell !== "" && !isNaN(parseFloat(cell)))
-        ? parseFloat(cell) : null;
-    }
+    // Build a map of AI slot output keyed by time label
+    // (AI now returns only future slots, so map them by label)
+    var slotMap = {};
+    slots.forEach(function(aiSlot) {
+      if (aiSlot && aiSlot.time) {
+        slotMap[aiSlot.time.trim()] = aiSlot;
+      }
+    });
 
     for (var s = 0; s < FC.SLOT_COUNT; s++) {
-      var aiSlot   = slots[s] || {};
       var row      = FC.DATA_START_ROW + s;
       var slotMins = FORECAST_SLOTS[s];
+      var label    = fcMinsToLabel(slotMins);
+      var actual   = existingActuals ? existingActuals[s] : null;
 
-      var pred   = parseFloat(aiSlot.price || 0) || 0;
-      var conf   = parseInt(aiSlot.conf    || 5) || 5;
-      var memo   = (aiSlot.memo || "").toString().substring(0, 80);
-      var actual = existingActuals[s];
+      // Always write the time label
+      sheet.getRange(row, FC.COL_TIME).setValue(label);
 
-      sheet.getRange(row, FC.COL_TIME).setValue(fcMinsToLabel(slotMins));
-      if (pred > 0) sheet.getRange(row, FC.COL_PRED).setValue(pred);
-      sheet.getRange(row, FC.COL_CONF).setValue(conf);
-      sheet.getRange(row, FC.COL_MEMO).setValue(memo);
+      // Always keep the DIFF formula live
       sheet.getRange(row, FC.COL_DIFF).setFormula(
         '=IF(E' + row + '="","—",E' + row + '-B' + row + ')'
       );
 
-      applyForecastRowFormat(sheet, row, s, slotMins, cstMins, conf, pred, actual);
+      // SLOT LOCKING: if actual exists, skip overwriting pred/conf/memo
+      if (actual && actual > 0) {
+        applyForecastRowFormat(sheet, row, s, slotMins, cstMins, null, null, actual);
+        continue;
+      }
+
+      // Future slot — write AI values if we have them
+      var aiSlot = slotMap[label];
+      if (!aiSlot) {
+        // AI didn't return this slot — leave as-is
+        applyForecastRowFormat(sheet, row, s, slotMins, cstMins, null, null, null);
+        continue;
+      }
+
+      var pred = parseFloat(aiSlot.price || 0) || 0;
+      var conf = parseInt(aiSlot.conf    || 5) || 5;
+      var memo = (aiSlot.memo || "").toString().substring(0, 80);
+
+      if (pred > 0) sheet.getRange(row, FC.COL_PRED).setValue(pred);
+      sheet.getRange(row, FC.COL_CONF).setValue(conf);
+      sheet.getRange(row, FC.COL_MEMO).setValue(memo);
+
+      applyForecastRowFormat(sheet, row, s, slotMins, cstMins, conf, pred, null);
     }
 
-    Logger.log("FC: Forecast rows written (" + FC.SLOT_COUNT + " slots).");
+    Logger.log("FC: Forecast rows written (" + FC.SLOT_COUNT + " slots, " +
+               Object.keys(slotMap).length + " new AI slots).");
   } catch (e) {
     Logger.log("writeForecastRows ERROR: " + e.message);
   }
@@ -466,6 +657,12 @@ function writeForecastRows(sheet, slots, now, cstMins) {
 
 // ─────────────────────────────────────────────────────────────
 // FILL ACTUAL PRICES
+//
+// Called every 5-min tick during market hours.
+// Fills actual price for slots whose time has passed.
+// Calls logForecastAccuracy() after each fill (dynamic updates).
+// Calls logForecastAccuracy(isEOD=true) when 3:00 PM fills.
+// Also calls buildForecastChart() to refresh the chart line.
 // ─────────────────────────────────────────────────────────────
 function fillActualPrices(sheet, data, now) {
   try {
@@ -473,6 +670,8 @@ function fillActualPrices(sheet, data, now) {
     var dow     = parseInt(Utilities.formatDate(now, "America/Chicago", "u"), 10) % 7;
     if (dow === 0 || dow === 6) return;
     if (cstMins < FC.MARKET_OPEN_MIN) return;
+
+    var anyFilled = false;
 
     for (var i = 0; i < FC.SLOT_COUNT; i++) {
       var slotMins = FORECAST_SLOTS[i];
@@ -492,13 +691,186 @@ function fillActualPrices(sheet, data, now) {
           .setNumberFormat("$#,##0.00")
           .setHorizontalAlignment("center");
 
-        var rowBg = Math.abs(cstMins - slotMins) <= 15
-          ? FC_COLOR.BG_CURRENT : FC_COLOR.BG_PAST;
+        var isCurrent = Math.abs(cstMins - slotMins) <= 15;
+        var rowBg = isCurrent ? FC_COLOR.BG_CURRENT : FC_COLOR.BG_PAST;
         sheet.getRange(row, 1, 1, FC.TOTAL_COLS).setBackground(rowBg);
+
+        anyFilled = true;
+
+        // EOD lock-in: 3:00 PM slot (last slot, index 13)
+        if (i === FC.SLOT_COUNT - 1) {
+          Logger.log("FC: 3:00 PM slot filled — triggering EOD accuracy lock.");
+          try { logForecastAccuracy(now, true); } catch (e) {
+            Logger.log("FC: logForecastAccuracy EOD error: " + e.message);
+          }
+        }
+
+      } else if (val !== "" && val !== null) {
+        // Already filled — keep row styling current
+        var isCur = Math.abs(cstMins - slotMins) <= 15;
+        var bg    = cstMins > slotMins + 15 ? FC_COLOR.BG_PAST
+                  : isCur ? FC_COLOR.BG_CURRENT
+                  : (i % 2 === 0 ? FC_COLOR.BG_ROW : FC_COLOR.BG_ROW_ALT);
+        sheet.getRange(row, 1, 1, FC.TOTAL_COLS).setBackground(bg);
       }
     }
+
+    // Dynamic accuracy log update (not EOD) whenever any new actual filled
+    if (anyFilled) {
+      try { logForecastAccuracy(now, false); } catch (e) {
+        Logger.log("FC: logForecastAccuracy intraday error: " + e.message);
+      }
+      updateChartHelperRange(sheet);
+      buildForecastChart(sheet);
+    }
+
   } catch (e) {
     Logger.log("fillActualPrices ERROR: " + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// UPDATE CHART HELPER RANGE
+//
+// CHART FIX: Writes a contiguous 3-column block at cols H–J
+// (COL_CH_TIME=8, COL_CH_PRED=9, COL_CH_ACTUAL=10).
+// Row 5 = headers. Rows 6–19 = data.
+// The chart uses ONLY this single range — no multi-range hacks.
+// Columns H–J are hidden so the user never sees them.
+// ─────────────────────────────────────────────────────────────
+function updateChartHelperRange(sheet) {
+  try {
+    // Header row
+    sheet.getRange(FC.HEADER_ROW, FC.COL_CH_TIME,   1, 1).setValue("Time");
+    sheet.getRange(FC.HEADER_ROW, FC.COL_CH_PRED,   1, 1).setValue("AI Forecast");
+    sheet.getRange(FC.HEADER_ROW, FC.COL_CH_ACTUAL, 1, 1).setValue("Actual SPY");
+
+    // Data rows
+    for (var i = 0; i < FC.SLOT_COUNT; i++) {
+      var srcRow  = FC.DATA_START_ROW + i;
+      var destRow = FC.DATA_START_ROW + i;
+
+      var timeVal   = sheet.getRange(srcRow, FC.COL_TIME).getValue();
+      var predVal   = sheet.getRange(srcRow, FC.COL_PRED).getValue();
+      var actualVal = sheet.getRange(srcRow, FC.COL_ACTUAL).getValue();
+
+      // Time label
+      sheet.getRange(destRow, FC.COL_CH_TIME).setValue(timeVal || fcMinsToLabel(FORECAST_SLOTS[i]));
+
+      // Predicted — only numeric values; "—" becomes blank
+      var pred = parseFloat(predVal);
+      sheet.getRange(destRow, FC.COL_CH_PRED).setValue(!isNaN(pred) && pred > 0 ? pred : "");
+
+      // Actual — only numeric values; blank if not yet filled
+      var actual = parseFloat(actualVal);
+      sheet.getRange(destRow, FC.COL_CH_ACTUAL).setValue(!isNaN(actual) && actual > 0 ? actual : "");
+    }
+
+    // Hide helper columns so user only sees cols A–F
+    sheet.hideColumns(FC.COL_GAP, FC.TOTAL_COLS - FC.COL_DIFF);
+
+    Logger.log("FC: Chart helper range updated.");
+  } catch (e) {
+    Logger.log("updateChartHelperRange ERROR: " + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BUILD / REFRESH FORECAST CHART
+//
+// FIX: Uses a SINGLE contiguous range (cols H–J, rows 5–19)
+// instead of three separate addRange() calls. The Google Sheets
+// chart API reliably renders a single range; multi-range causes
+// the blank chart box seen on 5/30/2026.
+//
+// Series 0 (col I, AI Forecast)  → gold dashed line
+// Series 1 (col J, Actual SPY)   → cyan solid line
+// ─────────────────────────────────────────────────────────────
+function buildForecastChart(sheet) {
+  try {
+    // Remove all existing charts
+    var existing = sheet.getCharts();
+    existing.forEach(function(c) { sheet.removeChart(c); });
+
+    // ── Compute Y-axis bounds from helper range data ──────
+    var allPrices = [];
+    for (var i = 0; i < FC.SLOT_COUNT; i++) {
+      var row  = FC.DATA_START_ROW + i;
+      var pred = parseFloat(sheet.getRange(row, FC.COL_CH_PRED).getValue());
+      var act  = parseFloat(sheet.getRange(row, FC.COL_CH_ACTUAL).getValue());
+      if (!isNaN(pred) && pred > 0) allPrices.push(pred);
+      if (!isNaN(act)  && act  > 0) allPrices.push(act);
+    }
+
+    var yMin, yMax;
+    if (allPrices.length > 0) {
+      var dataMin = Math.min.apply(null, allPrices);
+      var dataMax = Math.max.apply(null, allPrices);
+      var range   = dataMax - dataMin;
+      var pad     = Math.max(1.5, range * 0.18);
+      var win     = Math.max(4, range + pad * 2);
+      var mid     = (dataMin + dataMax) / 2;
+      yMin = Math.floor((mid - win / 2) * 100) / 100;
+      yMax = Math.ceil( (mid + win / 2) * 100) / 100;
+    } else {
+      yMin = 740;
+      yMax = 770;
+    }
+
+    Logger.log("FC: Chart Y-axis $" + yMin + " – $" + yMax);
+
+    // ── Single contiguous range: rows 5–19, cols H–J ─────
+    var numRows    = FC.DATA_END_ROW - FC.HEADER_ROW + 1;  // 15 rows (header + 14 data)
+    var chartRange = sheet.getRange(FC.HEADER_ROW, FC.COL_CH_TIME, numRows, 3);
+
+    var chart = sheet.newChart()
+      .setChartType(Charts.ChartType.LINE)
+      .addRange(chartRange)
+      .setPosition(FC.CHART_ANCHOR_ROW, 1, 0, 0)
+      .setOption("title",
+        "SPY Intraday: Actual vs AI Forecast  ·  " +
+        Utilities.formatDate(new Date(), "America/Chicago", "M/d/yyyy"))
+      .setOption("width",  900)
+      .setOption("height", 320)
+      .setOption("useFirstColumnAsDomain", true)
+      .setOption("interpolateNulls", true)
+      .setOption("series", {
+        0: { color: "#ffd740", lineWidth: 2,
+             lineDashStyle: [6, 3], labelInLegend: "🤖 AI Forecast" },
+        1: { color: "#00e5ff", lineWidth: 3,
+             labelInLegend: "📈 Actual SPY" }
+      })
+      .setOption("backgroundColor",  { fill: "#0d0d2b" })
+      .setOption("titleTextStyle",    { color: "#00e5ff", fontSize: 12, bold: true })
+      .setOption("hAxis", {
+        textStyle:  { color: "#7070aa", fontSize: 9 },
+        gridlines:  { color: "#1a1a3e" },
+        title:      "Time (CST)",
+        titleTextStyle: { color: "#5a5a8a" }
+      })
+      .setOption("vAxis", {
+        textStyle:  { color: "#7070aa", fontSize: 9 },
+        gridlines:  { color: "#1a1a3e" },
+        title:      "SPY Price ($)",
+        titleTextStyle: { color: "#5a5a8a" },
+        format:     "$#,##0.00",
+        viewWindow: { min: yMin, max: yMax }
+      })
+      .setOption("legend", {
+        position:  "top",
+        textStyle: { color: "#aaaacc", fontSize: 10 }
+      })
+      .setOption("chartArea", {
+        backgroundColor: "#0a0a14",
+        top: 40, left: 60, width: "82%", height: "72%"
+      })
+      .setOption("crosshair", { trigger: "both", color: "#3d3d6b" })
+      .build();
+
+    sheet.insertChart(chart);
+    Logger.log("FC: Chart inserted successfully.");
+  } catch (e) {
+    Logger.log("buildForecastChart ERROR: " + e.message + "\n" + e.stack);
   }
 }
 
@@ -513,7 +885,8 @@ function applyForecastRowFormat(sheet, row, slotIdx, slotMins, cstMins, conf, pr
                   : isCurrent ? FC_COLOR.BG_CURRENT
                   : (slotIdx % 2 === 0 ? FC_COLOR.BG_ROW : FC_COLOR.BG_ROW_ALT);
 
-    sheet.getRange(row, 1, 1, FC.TOTAL_COLS)
+    // Only style visible cols A–F to avoid touching hidden helper cols
+    sheet.getRange(row, 1, 1, FC.COL_DIFF)
       .setBackground(rowBg).setFontFamily(BT_FONT.DATA)
       .setFontSize(9).setVerticalAlignment("middle");
 
@@ -522,19 +895,21 @@ function applyForecastRowFormat(sheet, row, slotIdx, slotMins, cstMins, conf, pr
       .setFontWeight(isCurrent ? "bold" : "normal")
       .setHorizontalAlignment("center");
 
-    if (pred > 0) {
+    if (pred && pred > 0) {
       sheet.getRange(row, FC.COL_PRED)
         .setFontColor(FC_COLOR.TXT_PRED).setFontFamily(BT_FONT.MONO)
         .setFontWeight("bold").setFontSize(10)
         .setNumberFormat("$#,##0.00").setHorizontalAlignment("center");
     }
 
-    var confColor = conf >= 8 ? FC_COLOR.TXT_CONF_HI
-                  : conf >= 5 ? FC_COLOR.TXT_CONF_MID
-                  : FC_COLOR.TXT_CONF_LOW;
-    sheet.getRange(row, FC.COL_CONF)
-      .setFontColor(confColor).setFontWeight("bold")
-      .setFontSize(10).setHorizontalAlignment("center");
+    if (conf) {
+      var confColor = conf >= 8 ? FC_COLOR.TXT_CONF_HI
+                    : conf >= 5 ? FC_COLOR.TXT_CONF_MID
+                    : FC_COLOR.TXT_CONF_LOW;
+      sheet.getRange(row, FC.COL_CONF)
+        .setFontColor(confColor).setFontWeight("bold")
+        .setFontSize(10).setHorizontalAlignment("center");
+    }
 
     sheet.getRange(row, FC.COL_MEMO)
       .setFontColor(FC_COLOR.TXT_MEMO).setFontSize(8)
@@ -559,97 +934,12 @@ function applyForecastRowFormat(sheet, row, slotIdx, slotMins, cstMins, conf, pr
 }
 
 // ─────────────────────────────────────────────────────────────
-// BUILD / REFRESH FORECAST CHART
-//
-// Y-axis is computed dynamically from predicted + actual prices
-// so the line is always visible even when the price range is
-// very tight (e.g. all slots within $1 of each other).
-// A minimum $4 window is enforced so there's always visible
-// spread on the chart. Centered on the midpoint of all values.
+// RESET DAILY FLAGS
 // ─────────────────────────────────────────────────────────────
-function buildForecastChart(sheet) {
-  try {
-    var existing = sheet.getCharts();
-    existing.forEach(function(c) { sheet.removeChart(c); });
-
-    // ── Compute Y-axis bounds from predicted + actual values ──
-    var allPrices = [];
-    for (var i = 0; i < FC.SLOT_COUNT; i++) {
-      var row  = FC.DATA_START_ROW + i;
-      var pred = parseFloat(sheet.getRange(row, FC.COL_PRED).getValue());
-      var act  = parseFloat(sheet.getRange(row, FC.COL_ACTUAL).getValue());
-      if (!isNaN(pred) && pred > 0) allPrices.push(pred);
-      if (!isNaN(act)  && act  > 0) allPrices.push(act);
-    }
-
-    var yMin, yMax;
-    if (allPrices.length > 0) {
-      var dataMin = Math.min.apply(null, allPrices);
-      var dataMax = Math.max.apply(null, allPrices);
-      var range   = dataMax - dataMin;
-      // Enforce minimum $4 visible window, pad by $1 on each side
-      var pad     = Math.max(1, range * 0.15);
-      var window  = Math.max(4, range + pad * 2);
-      var mid     = (dataMin + dataMax) / 2;
-      yMin = Math.floor((mid - window / 2) * 100) / 100;
-      yMax = Math.ceil( (mid + window / 2) * 100) / 100;
-    } else {
-      // Fallback when no data yet — use a sensible SPY window
-      yMin = 740;
-      yMax = 770;
-    }
-
-    Logger.log("FC: Chart Y-axis range $" + yMin + " – $" + yMax);
-
-    // Range spans header row + all 14 data rows
-    var numRows     = FC.DATA_END_ROW - FC.HEADER_ROW + 1;
-    var timeRange   = sheet.getRange(FC.HEADER_ROW, FC.COL_TIME,   numRows, 1);
-    var predRange   = sheet.getRange(FC.HEADER_ROW, FC.COL_PRED,   numRows, 1);
-    var actualRange = sheet.getRange(FC.HEADER_ROW, FC.COL_ACTUAL, numRows, 1);
-
-    var chart = sheet.newChart()
-      .setChartType(Charts.ChartType.LINE)
-      .addRange(timeRange)
-      .addRange(predRange)
-      .addRange(actualRange)
-      .setPosition(FC.CHART_ANCHOR_ROW, 1, 0, 0)
-      .setOption("title", "SPY Intraday: Actual vs AI Forecast  ·  " +
-                          Utilities.formatDate(new Date(), "America/Chicago", "M/d/yyyy"))
-      .setOption("width",  900)
-      .setOption("height", 320)
-      .setOption("useFirstColumnAsDomain", true)
-      .setOption("interpolateNulls", true)
-      .setOption("series", {
-        0: { color: "#ffd740", lineWidth: 2, lineDashStyle: [6, 3], labelInLegend: "🤖 AI Forecast" },
-        1: { color: "#00e5ff", lineWidth: 3, labelInLegend: "📈 Actual SPY" }
-      })
-      .setOption("backgroundColor",   { fill: "#0d0d2b" })
-      .setOption("titleTextStyle",     { color: "#00e5ff", fontSize: 12, bold: true })
-      .setOption("hAxis", {
-        textStyle: { color: "#7070aa", fontSize: 9 },
-        gridlines: { color: "#1a1a3e" },
-        title: "Time (CST)", titleTextStyle: { color: "#5a5a8a" }
-      })
-      .setOption("vAxis", {
-        textStyle:  { color: "#7070aa", fontSize: 9 },
-        gridlines:  { color: "#1a1a3e" },
-        title:      "SPY Price ($)", titleTextStyle: { color: "#5a5a8a" },
-        format:     "$#,##0.00",
-        viewWindow: { min: yMin, max: yMax }
-      })
-      .setOption("legend", { position: "top", textStyle: { color: "#aaaacc", fontSize: 10 } })
-      .setOption("chartArea", {
-        backgroundColor: "#0a0a14",
-        top: 40, left: 60, width: "82%", height: "72%"
-      })
-      .setOption("crosshair", { trigger: "both", color: "#3d3d6b" })
-      .build();
-
-    sheet.insertChart(chart);
-    Logger.log("FC: Chart built/refreshed.");
-  } catch (e) {
-    Logger.log("buildForecastChart ERROR: " + e.message);
-  }
+function resetDailyForecastFlags() {
+  var keys = ["FC_LAST_RUN_MINS", "FC_EARLY_AM_FIRED_TODAY", "FC_LAST_VIX"];
+  keys.forEach(function(k) { setFlag(k, ""); });
+  Logger.log("FC: Daily forecast flags reset.");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -678,7 +968,7 @@ function setupForecastSheet(ss) {
   sheet.getRange(1, 1, neededRows, neededCols).setBackground(FC_COLOR.BG_SHEET);
 
   // Row 1: Banner
-  sheet.getRange(FC.BANNER_ROW, 1, 1, neededCols).merge()
+  sheet.getRange(FC.BANNER_ROW, 1, 1, FC.COL_DIFF).merge()
     .setValue("📡  S P Y   F O R E C A S T   ·   A I   3 0 - M I N   P R I C E   P A T H")
     .setBackground(FC_COLOR.BG_BANNER).setFontColor(FC_COLOR.TXT_BANNER)
     .setFontWeight("bold").setFontSize(14).setFontFamily(BT_FONT.BANNER)
@@ -686,26 +976,28 @@ function setupForecastSheet(ss) {
   sheet.setRowHeight(FC.BANNER_ROW, 40);
 
   // Row 2: Subtitle
-  sheet.getRange(FC.SUBTITLE_ROW, 1, 1, neededCols).merge()
+  sheet.getRange(FC.SUBTITLE_ROW, 1, 1, FC.COL_DIFF).merge()
     .setValue("AI predicts SPY price at each 30-min mark · Updates every 30 min market hours · 4 hrs overnight/weekend · 8:00 AM CST pre-market preview")
     .setBackground(FC_COLOR.BG_BANNER).setFontColor(FC_COLOR.TXT_META)
     .setFontSize(8).setHorizontalAlignment("center").setVerticalAlignment("middle");
   sheet.setRowHeight(FC.SUBTITLE_ROW, 18);
 
   // Row 3: Meta
-  sheet.getRange(FC.META_ROW, 1, 1, neededCols).merge()
+  sheet.getRange(FC.META_ROW, 1, 1, FC.COL_DIFF).merge()
     .setValue("🕐  Not yet generated — will fire at next scheduled update")
     .setBackground(FC_COLOR.BG_BANNER).setFontColor(FC_COLOR.TXT_META)
     .setFontSize(9).setHorizontalAlignment("center");
   sheet.setRowHeight(FC.META_ROW, 18);
 
   // Row 4: Gap
-  sheet.getRange(FC.GAP_ROW, 1, 1, neededCols).setBackground("#0a0a12");
+  sheet.getRange(FC.GAP_ROW, 1, 1, FC.COL_DIFF).setBackground("#0a0a12");
   sheet.setRowHeight(FC.GAP_ROW, 4);
 
-  // Row 5: Headers
-  var headers = ["⏱ TIME (CST)", "🤖 PREDICTED", "💡 CONF", "📝 AI MEMO", "💰 ACTUAL", "📊 DIFF"];
-  sheet.getRange(FC.HEADER_ROW, 1, 1, neededCols).setValues([headers])
+  // Row 5: Headers (visible cols A–F only)
+  var headers = [
+    ["⏱ TIME (CST)", "🤖 PREDICTED", "💡 CONF", "📝 AI MEMO", "💰 ACTUAL", "📊 DIFF"]
+  ];
+  sheet.getRange(FC.HEADER_ROW, 1, 1, FC.COL_DIFF).setValues(headers)
     .setBackground(FC_COLOR.BG_HEADER).setFontColor(FC_COLOR.TXT_HEADER)
     .setFontWeight("bold").setFontSize(9).setFontFamily(BT_FONT.HEADER)
     .setHorizontalAlignment("center").setVerticalAlignment("middle");
@@ -717,7 +1009,7 @@ function setupForecastSheet(ss) {
     var slotMins = FORECAST_SLOTS[i];
     var rowBg    = i % 2 === 0 ? FC_COLOR.BG_ROW : FC_COLOR.BG_ROW_ALT;
 
-    sheet.getRange(row, 1, 1, neededCols).setBackground(rowBg);
+    sheet.getRange(row, 1, 1, FC.COL_DIFF).setBackground(rowBg);
     sheet.getRange(row, FC.COL_TIME).setValue(fcMinsToLabel(slotMins))
       .setFontColor(FC_COLOR.TXT_TIME).setFontFamily(BT_FONT.DATA)
       .setFontSize(9).setHorizontalAlignment("center").setVerticalAlignment("middle");
@@ -736,23 +1028,34 @@ function setupForecastSheet(ss) {
   }
 
   // Row 20: Gap after data
-  sheet.getRange(FC.GAP2_ROW, 1, 1, neededCols).setBackground("#0a0a12");
+  sheet.getRange(FC.GAP2_ROW, 1, 1, FC.COL_DIFF).setBackground("#0a0a12");
   sheet.setRowHeight(FC.GAP2_ROW, 6);
 
   // Header notes
   sheet.getRange(FC.HEADER_ROW, FC.COL_CONF).setNote(
     "💡 CONFIDENCE (1–10)\n─────────────────\n" +
     "8–10 = High confidence\n5–7  = Moderate\n1–4  = Low\n\n" +
-    "Drops for slots far in the future."
+    "Adjusts based on VIX regime:\n" +
+    "High VIX (≥25) caps PM slots at 5.\n" +
+    "Low VIX (<18) allows higher PM confidence."
   );
   sheet.getRange(FC.HEADER_ROW, FC.COL_DIFF).setNote(
     "📊 DIFF\n─────────────────\n" +
-    "Actual − Predicted.\nGreen = SPY beat forecast.\n" +
-    "Red = SPY missed.\nBlank until actual fills."
+    "Actual − Predicted.\n" +
+    "Positive = SPY beat forecast (AI underestimated).\n" +
+    "Negative = SPY missed forecast (AI overestimated).\n" +
+    "Blank until actual fills.\n\n" +
+    "Daily diffs logged → 📈 FC ACCURACY LOG\n" +
+    "Fed back into next-day AI prompt for bias correction."
   );
 
   sheet.setFrozenRows(FC.HEADER_ROW);
   applyForecastColumnWidths(sheet);
+
+  // Initialize chart helper range and build chart
+  updateChartHelperRange(sheet);
+  buildForecastChart(sheet);
+
   Logger.log("FC: Forecast sheet setup complete.");
   return sheet;
 }
@@ -767,15 +1070,7 @@ function applyForecastColumnWidths(sheet) {
   sheet.setColumnWidth(FC.COL_MEMO,   420);
   sheet.setColumnWidth(FC.COL_ACTUAL, 100);
   sheet.setColumnWidth(FC.COL_DIFF,   90);
-}
-
-// ─────────────────────────────────────────────────────────────
-// RESET DAILY FLAGS
-// ─────────────────────────────────────────────────────────────
-function resetDailyForecastFlags() {
-  var keys = ["FC_LAST_RUN_MINS", "FC_EARLY_AM_FIRED_TODAY"];
-  keys.forEach(function(k) { setFlag(k, ""); });
-  Logger.log("FC: Daily forecast flags reset.");
+  // COL_GAP (7) and helper cols (8–10) are hidden
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -784,6 +1079,10 @@ function resetDailyForecastFlags() {
 function setupForecastSheetFromMenu() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   setupForecastSheet(ss);
+  // Also ensure accuracy log exists
+  if (!ss.getSheetByName(SHEET_FC_ACCURACY)) {
+    setupFCAccuracySheet(ss);
+  }
   SpreadsheetApp.getUi().alert(
     "📡 FORECAST SHEET\n\n" +
     "✅ Sheet created and ready!\n\n" +
@@ -792,15 +1091,22 @@ function setupForecastSheetFromMenu() {
     "• Market hours: updates every 30 min (8:30 AM–3:00 PM)\n" +
     "• Overnight/weekend: every 4 hours\n" +
     "• Actual prices fill automatically every 5-min tick\n" +
-    "• Chart shows gold forecast line immediately after first run\n" +
-    "• Cyan actual line grows in during market hours\n\n" +
+    "• Locked slots not overwritten on re-forecast\n" +
+    "• Chart shows gold forecast line + cyan actual line\n\n" +
+    "ACCURACY FEATURES:\n" +
+    "• Last 3-day diff history fed into every prompt\n" +
+    "• VIX-aware confidence decay\n" +
+    "• Intraday bias detection (4+ actuals → self-correct)\n" +
+    "• Mid-day slot locking (actuals = anchors)\n" +
+    "• Daily accuracy logged → 📈 FC ACCURACY LOG\n\n" +
     "AI CONTEXT INCLUDES:\n" +
     "• SPY OHLC, VWAP, volume\n" +
     "• S1/S2/R1/R2 support & resistance\n" +
     "• Bear Trap phase + confidence\n" +
     "• VIX + ES futures\n" +
     "• Morning Brief targets\n" +
-    "• Last 12 SPY LOG ticks"
+    "• Last 12 SPY LOG ticks\n" +
+    "• 3-day forecast error history"
   );
 }
 
@@ -827,10 +1133,22 @@ function runManualForecast() {
 
     SpreadsheetApp.getUi().alert(
       "✅ Forecast generated!\n\nSPY: $" + data.price.toFixed(2) +
-      "\n\nCheck the 📡 FORECAST sheet.\nThe gold forecast line should now be visible on the chart."
+      "\n\nCheck the 📡 FORECAST sheet.\n" +
+      "Gold = AI forecast · Cyan = Actual price.\n" +
+      "Chart uses a single contiguous data range (reliable fix)."
     );
   } catch (e) {
     Logger.log("runManualForecast ERROR: " + e.message);
     SpreadsheetApp.getUi().alert("❌ Error: " + e.message + "\n\nSee Apps Script logs.");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENSURE FC ACCURACY SHEET EXISTS (called from ensureSheetsExist)
+// ─────────────────────────────────────────────────────────────
+function ensureFCAccuracySheet(ss) {
+  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(SHEET_FC_ACCURACY)) {
+    setupFCAccuracySheet(ss);
   }
 }

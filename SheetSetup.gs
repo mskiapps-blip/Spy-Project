@@ -45,16 +45,22 @@ function setupSheets() {
     setupForecastSheet(ss);
   }
 
-// ── AI Health sheet ───────────────────────────────────────
+  // ── AI Health sheet ───────────────────────────────────────
   if (!ss.getSheetByName(SHEET_AI_HEALTH)) {
     setupAIHealthSheet(ss);
+  }
+
+  // ── FC Accuracy Log sheet ─────────────────────────────────
+  if (!ss.getSheetByName(SHEET_FC_ACCURACY)) {
+    setupFCAccuracySheet(ss);
   }
 
   SpreadsheetApp.getUi().alert(
     "🚀 SPY TRACKER READY!\n\n" +
     "✅ Sheets created and themed.\n" +
     holidayNote + "\n" +
-    "✅ CONFIG initialized.\n\n" +
+    "✅ CONFIG initialized.\n" +
+    "✅ FC Accuracy Log ready.\n\n" +
     "NEXT STEPS:\n" +
     "1. Add GEMINI_API_KEY in:\n" +
     "   Extensions → Apps Script → Project Settings\n" +
@@ -63,7 +69,6 @@ function setupSheets() {
     "   Menu → ⚡ SPY TRACKER → Install 5-Min Trigger\n\n" +
     "3. Test: Menu → ⚡ SPY TRACKER → Run Now (Manual Tick)"
   );
-
 }
 
 // ─────────────────────────────────────────────────────────────

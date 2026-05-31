@@ -1,9 +1,9 @@
 // ============================================================
-// FILE: Code.gs  (UPDATED — includes AI Health Sheet integration)
+// FILE: Code.gs
 // PURPOSE: Main entry point. Handles the 5-minute trigger,
 //          market open/close checks, and wires everything together.
 //          Includes: 🪤 Bear Trap, 📊 Scorecard, 🌅 Morning Brief,
-//          🖥️ Dashboard, 📡 Forecast, 🤖 AI Health.
+//          🖥️ Dashboard, 📡 Forecast, 🤖 AI Health, 📈 FC Accuracy Log.
 // ============================================================
 
 // ─────────────────────────────────────────────────────────────
@@ -14,7 +14,8 @@ var SHEET_CONFIG        = "CONFIG";
 var SHEET_HOLIDAYS      = "HOLIDAYS";
 var SHEET_DASHBOARD     = "🖥️ DASHBOARD";
 var SHEET_FORECAST      = "📡 FORECAST";
-var SHEET_AI_HEALTH     = "🤖 AI HEALTH";    // ← AI Health sheet
+var SHEET_AI_HEALTH     = "🤖 AI HEALTH";
+var SHEET_FC_ACCURACY   = "📈 FC ACCURACY LOG";   // ← Forecast Accuracy Log
 
 // ─────────────────────────────────────────────────────────────
 // MARKET HOURS (Eastern Time)
@@ -162,7 +163,7 @@ function runManualTick() {
     runMorningBriefTick(data, now);
     runDashboardTick(data, now);
     runForecastTick(data, now);
-    runAIHealthTick(now);               // ← AI Health in manual tick too
+    runAIHealthTick(now);
 
     SpreadsheetApp.getUi().alert(
       "✅ Tick logged!\n" +
@@ -174,6 +175,7 @@ function runManualTick() {
       "  🪤 BEAR TRAP\n" +
       "  📊 SCORECARD\n" +
       "  📡 FORECAST\n" +
+      "  📈 FC ACCURACY LOG\n" +
       "  🤖 AI HEALTH"
     );
 
@@ -251,8 +253,11 @@ function ensureSheetsExist(ss) {
   if (!ss.getSheetByName(SHEET_FORECAST)) {
     setupForecastSheet(ss);
   }
-  if (!ss.getSheetByName(SHEET_AI_HEALTH)) {    // ← AI Health sheet
+  if (!ss.getSheetByName(SHEET_AI_HEALTH)) {
     setupAIHealthSheet(ss);
+  }
+  if (!ss.getSheetByName(SHEET_FC_ACCURACY)) {       // ← FC Accuracy Log
+    setupFCAccuracySheet(ss);
   }
 }
 
@@ -271,13 +276,14 @@ function onOpen() {
     .addItem("🪤  Setup Bear Trap Sheet",         "setupBearTrapSheetFromMenu")
     .addItem("📊  Setup Scorecard Sheet",         "setupScorecardSheetFromMenu")
     .addItem("📡  Setup Forecast Sheet",          "setupForecastSheetFromMenu")
-    .addItem("🤖  Setup AI Health Sheet",         "setupAIHealthSheetFromMenu")   // ← NEW
+    .addItem("📈  Setup FC Accuracy Log",         "setupFCAccuracySheetFromMenu")  // ← NEW
+    .addItem("🤖  Setup AI Health Sheet",         "setupAIHealthSheetFromMenu")
     .addSeparator()
     .addItem("▶️  Run Now (Manual Tick)",         "runManualTick")
     .addItem("🖥️  Refresh Dashboard Now",         "runManualDashboardRefresh")
     .addItem("🌅  Run Morning Brief Now",         "runManualMorningBrief")
     .addItem("📡  Run Forecast Now",              "runManualForecast")
-    .addItem("🤖  Refresh AI Health Now",         "runManualAIHealthRefresh")     // ← NEW
+    .addItem("🤖  Refresh AI Health Now",         "runManualAIHealthRefresh")
     .addSeparator()
     .addItem("⏰  Install 5-Min Trigger",         "installTrigger")
     .addItem("🛑  Remove All Triggers",           "removeAllTriggers")
@@ -292,7 +298,7 @@ function installTrigger() {
   removeAllTriggers();
   ScriptApp.newTrigger("runEvery5Minutes")
     .timeBased().everyMinutes(5).create();
-  SpreadsheetApp.getUi().alert("✅ 5-minute trigger installed!");
+  SpreadsheetApp.getUi().alert("✅ 5-minute trigger installed!\n\nRuns every 5 minutes.");
 }
 
 function removeAllTriggers() {
@@ -346,61 +352,5 @@ function clearLogData() {
     bt.deleteRows(4, bt.getLastRow() - 3);
   }
 
-  ui.alert("✅ Log data cleared.");
-}
-
-// ─────────────────────────────────────────────────────────────
-// MARKET OPEN CHECK
-// ─────────────────────────────────────────────────────────────
-function isMarketOpen(utcDate) {
-  var etH   = parseInt(Utilities.formatDate(utcDate, "America/New_York", "H"),  10);
-  var etM   = parseInt(Utilities.formatDate(utcDate, "America/New_York", "mm"), 10);
-  var total = etH * 60 + etM;
-  var open  = MARKET_OPEN_HOUR  * 60 + MARKET_OPEN_MIN;
-  var close = MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MIN;
-  return total >= open && total < close;
-}
-
-// ─────────────────────────────────────────────────────────────
-// GET CURRENT TIME — returns raw UTC Date
-// ─────────────────────────────────────────────────────────────
-function getCurrentEasternTime() {
-  return new Date();
-}
-
-// ─────────────────────────────────────────────────────────────
-// CONFIG FLAG HELPERS
-// ─────────────────────────────────────────────────────────────
-function setFlag(key, value) {
-  try {
-    var ss     = SpreadsheetApp.getActiveSpreadsheet();
-    var config = ss.getSheetByName(SHEET_CONFIG);
-    if (!config) return;
-    var data = config.getDataRange().getValues();
-    for (var i = 0; i < data.length; i++) {
-      if (String(data[i][0]) === String(key)) {
-        config.getRange(i + 1, 2).setValue(value);
-        return;
-      }
-    }
-    config.appendRow([key, value, ""]);
-  } catch (e) {
-    Logger.log("setFlag ERROR (" + key + "): " + e.message);
-  }
-}
-
-function getFlag(key) {
-  try {
-    var ss     = SpreadsheetApp.getActiveSpreadsheet();
-    var config = ss.getSheetByName(SHEET_CONFIG);
-    if (!config) return null;
-    var data = config.getDataRange().getValues();
-    for (var i = 0; i < data.length; i++) {
-      if (String(data[i][0]) === String(key)) return data[i][1];
-    }
-    return null;
-  } catch (e) {
-    Logger.log("getFlag ERROR (" + key + "): " + e.message);
-    return null;
-  }
+  ui.alert("✅ Log data cleared.\n\nSPY LOG and BEAR TRAP reset. Headers preserved.");
 }
