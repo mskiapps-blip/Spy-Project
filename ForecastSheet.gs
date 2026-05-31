@@ -137,34 +137,65 @@ function fcGetCSTMins(utcDate) {
 
 // ─────────────────────────────────────────────────────────────
 // SHOULD FORECAST FIRE?
+//
+// Weekends / overnight: use FC_LAST_RUN_TS (Unix ms timestamp)
+// so elapsed time is accurate across day boundaries and the
+// full Fri→Sat→Sun→Mon span. Minutes-of-day (FC_LAST_RUN_MINS)
+// only works reliably within a single calendar day.
+//
+// Market hours: still use FC_LAST_RUN_MINS (30-min cadence,
+// always within the same session day — no wraparound risk).
 // ─────────────────────────────────────────────────────────────
 function shouldFireForecast(now) {
   try {
     var cstMins   = fcGetCSTMins(now);
     var dow       = parseInt(Utilities.formatDate(now, "America/Chicago", "u"), 10) % 7;
     var isWeekend = (dow === 0 || dow === 6);
+    var nowMs     = now.getTime();
 
+    // ── Weekends: use real timestamp for elapsed ───────────
+    if (isWeekend) {
+      var lastTsStr = getFlag("FC_LAST_RUN_TS");
+      var lastTs    = (lastTsStr && lastTsStr !== "") ? parseInt(lastTsStr) : 0;
+      if (isNaN(lastTs)) lastTs = 0;
+      var elapsedMs  = lastTs > 0 ? nowMs - lastTs : 99999999;
+      var elapsedMin = elapsedMs / 60000;
+      Logger.log("FC weekend check: elapsedMin=" + Math.round(elapsedMin) +
+                 " threshold=" + FC.OVERNIGHT_INTERVAL_MIN);
+      return elapsedMin >= FC.OVERNIGHT_INTERVAL_MIN;
+    }
+
+    // ── Weekday: use minutes-of-day for market-hours cadence ─
     var lastRunStr = getFlag("FC_LAST_RUN_MINS");
     var lastRun    = (lastRunStr && lastRunStr !== "") ? parseInt(lastRunStr) : -9999;
     if (isNaN(lastRun)) lastRun = -9999;
+
+    // Also check timestamp for overnight/after-hours weekday
+    // so a forecast that ran Friday afternoon doesn't block Monday morning
+    var lastTsWd   = getFlag("FC_LAST_RUN_TS");
+    var lastTsMsWd = (lastTsWd && lastTsWd !== "") ? parseInt(lastTsWd) : 0;
+    var tsElapsed  = lastTsMsWd > 0 ? (nowMs - lastTsMsWd) / 60000 : 99999;
 
     var elapsed = (lastRun < 0)
       ? 9999
       : (cstMins >= lastRun ? cstMins - lastRun : (1440 - lastRun) + cstMins);
 
-    if (isWeekend) return elapsed >= FC.OVERNIGHT_INTERVAL_MIN;
-
+    // Pre-market early AM window (8:00–8:30 CST)
     if (cstMins >= FC.EARLY_AM_MIN && cstMins < FC.MARKET_OPEN_MIN) {
       var earlyFired = getFlag("FC_EARLY_AM_FIRED_TODAY");
       var todayStr   = Utilities.formatDate(now, "America/Chicago", "yyyy-MM-dd");
-      return (earlyFired !== todayStr && elapsed >= FC.COOLDOWN_MIN);
+      // Also allow if it's been >2 hrs since last run (catches Mon morning after weekend)
+      return (earlyFired !== todayStr &&
+              (elapsed >= FC.COOLDOWN_MIN || tsElapsed >= FC.COOLDOWN_MIN));
     }
 
+    // Active market hours (8:30–3:00 CST): 30-min cadence
     if (cstMins >= FC.MARKET_OPEN_MIN && cstMins < FC.MARKET_CLOSE_MIN) {
       return elapsed >= FC.MARKET_INTERVAL_MIN;
     }
 
-    return elapsed >= FC.OVERNIGHT_INTERVAL_MIN;
+    // After hours / overnight weekday: use real timestamp
+    return tsElapsed >= FC.OVERNIGHT_INTERVAL_MIN;
 
   } catch (e) {
     Logger.log("shouldFireForecast ERROR: " + e.message);
@@ -307,6 +338,7 @@ function generateForecast(sheet, data, now) {
       .setHorizontalAlignment("center").setBackground(FC_COLOR.BG_BANNER);
 
     setFlag("FC_LAST_RUN_MINS", cstMins.toString());
+    setFlag("FC_LAST_RUN_TS",   now.getTime().toString());  // real timestamp for cross-day elapsed
 
     var dow = parseInt(Utilities.formatDate(now, "America/Chicago", "u"), 10) % 7;
     if (dow !== 0 && dow !== 6 &&
@@ -937,7 +969,7 @@ function applyForecastRowFormat(sheet, row, slotIdx, slotMins, cstMins, conf, pr
 // RESET DAILY FLAGS
 // ─────────────────────────────────────────────────────────────
 function resetDailyForecastFlags() {
-  var keys = ["FC_LAST_RUN_MINS", "FC_EARLY_AM_FIRED_TODAY", "FC_LAST_VIX"];
+  var keys = ["FC_LAST_RUN_MINS", "FC_LAST_RUN_TS", "FC_EARLY_AM_FIRED_TODAY", "FC_LAST_VIX"];
   keys.forEach(function(k) { setFlag(k, ""); });
   Logger.log("FC: Daily forecast flags reset.");
 }
